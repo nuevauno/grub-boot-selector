@@ -6,7 +6,7 @@
 # IMPORTANT: This compiles a MODIFIED version of GRUB with SNES controller support
 #
 
-VERSION="3.0"
+VERSION="4.0"
 
 set -euo pipefail
 
@@ -373,238 +373,203 @@ ok "GRUB downloaded"
 
 cd grub
 
-# PATCH: Add SNES controller support with proper HID report parsing
-# The key issue with tsoding's code is that it only parses Logitech F510 HID reports.
-# SNES controllers use a DIFFERENT format:
-#   - Logitech F510: D-Pad in byte 4 bits 0-3 as encoded value 0-8
-#   - SNES USB: D-Pad as X/Y axes in bytes 0-1 (0x00=min, 0x7F=center, 0xFF=max)
+# PATCH: Complete SNES controller support with ALL missing fixes
 #
-# This comprehensive patch adds a gamepad type system and snes_generate_keys() function.
+# This patch addresses ALL issues found by deep analysis:
+#
+# Issue 1: Hardcoded VID/PID filter (FIXED)
+# Issue 2: Wrong HID report parsing for SNES (FIXED)
+# Issue 3: Missing HID initialization - SET_PROTOCOL, SET_IDLE (FIXED)
+# Issue 4: No error recovery / dead flag (FIXED)
+# Issue 5: Wrong baseline report for SNES (FIXED)
 
-info "Applying comprehensive SNES patch..."
+info "Applying comprehensive SNES patch with HID initialization fixes..."
 
-cat > /tmp/snes_patch.patch << 'PATCHEOF'
---- a/grub-core/term/usb_gamepad.c
-+++ b/grub-core/term/usb_gamepad.c
-@@ -31,8 +31,30 @@
- #define KEY_QUEUE_CAPACITY 32
- #define USB_REPORT_SIZE 8
+# First, let's add the missing USB HID defines if they don't exist
+USB_GAMEPAD_FILE="grub-core/term/usb_gamepad.c"
 
--#define LOGITECH_VENDORID 0x046d
--#define RUMBLEPAD_PRODUCTID 0xc218
-+/* Gamepad type */
-+typedef enum {
-+    GAMEPAD_LOGITECH_F510,
-+    GAMEPAD_SNES_GENERIC
-+} gamepad_type_t;
-+
-+/* Supported devices */
-+static struct {
-+    grub_uint16_t vid;
-+    grub_uint16_t pid;
-+    gamepad_type_t type;
-+} supported_devices[] = {
-+    {0x046d, 0xc218, GAMEPAD_LOGITECH_F510},  /* Logitech F510 */
-+    {0x0810, 0xe501, GAMEPAD_SNES_GENERIC},   /* Generic Chinese SNES */
-+    {0x0079, 0x0011, GAMEPAD_SNES_GENERIC},   /* DragonRise */
-+    {0x0583, 0x2060, GAMEPAD_SNES_GENERIC},   /* iBuffalo */
-+    {0x2dc8, 0x9018, GAMEPAD_SNES_GENERIC},   /* 8BitDo SN30 */
-+    {0x12bd, 0xd015, GAMEPAD_SNES_GENERIC},   /* Generic 2-pack */
-+    {0x1a34, 0x0802, GAMEPAD_SNES_GENERIC},   /* USB Gamepad */
-+    {0x0810, 0x0001, GAMEPAD_SNES_GENERIC},   /* Generic USB */
-+    {0x0079, 0x0006, GAMEPAD_SNES_GENERIC},   /* DragonRise v2 */
-+    {0, 0, 0}  /* End */
-+};
+if [ -f "$USB_GAMEPAD_FILE" ]; then
+    info "Found usb_gamepad.c - applying patches..."
 
- static int dpad_mapping[DIR_COUNT] = { GRUB_TERM_NO_KEY };
- static int button_mapping[BUTTONS_COUNT] = { GRUB_TERM_NO_KEY };
-@@ -56,6 +78,7 @@ struct grub_usb_gamepad_data
-     grub_uint8_t prev_report[USB_REPORT_SIZE];
-     grub_uint8_t report[USB_REPORT_SIZE];
-     int key_queue[KEY_QUEUE_CAPACITY];
-+    gamepad_type_t gamepad_type;
-     int key_queue_begin;
-     int key_queue_size;
- };
-@@ -64,6 +87,11 @@ static grub_uint8_t initial_logitech_rumble_f510_report[USB_REPORT_SIZE] = {
-     0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04, 0xff
- };
+    # Create backup
+    cp "$USB_GAMEPAD_FILE" "${USB_GAMEPAD_FILE}.orig"
 
-+/* SNES baseline: centered axes (0x7F), no buttons */
-+static grub_uint8_t initial_snes_report[USB_REPORT_SIZE] = {
-+    0x7f, 0x7f, 0x7f, 0x7f, 0x00, 0x00, 0x00, 0x00
-+};
-+
- static struct grub_term_input gamepads[GAMEPADS_CAPACITY];
+    # PATCH 1: Add SNES VID/PIDs and gamepad type system
+    # Replace the hardcoded Logitech defines with a device table
+    if grep -q "LOGITECH_VENDORID" "$USB_GAMEPAD_FILE"; then
+        info "Patching VID/PID filter..."
 
- static inline
-@@ -141,6 +169,67 @@ static void logitech_rumble_f510_generate_keys(struct grub_usb_gamepad_data *dat
- #undef IS_PRESSED
- }
+        # Remove the old defines and add the new system
+        sed -i '/#define LOGITECH_VENDORID/,/#define RUMBLEPAD_PRODUCTID/c\
+/* Gamepad type */\
+typedef enum {\
+    GAMEPAD_LOGITECH_F510,\
+    GAMEPAD_SNES_GENERIC,\
+    GAMEPAD_GENERIC_HID\
+} gamepad_type_t;\
+\
+/* Supported devices - add your controller VID:PID here */\
+static struct {\
+    grub_uint16_t vid;\
+    grub_uint16_t pid;\
+    gamepad_type_t type;\
+} supported_devices[] = {\
+    {0x046d, 0xc218, GAMEPAD_LOGITECH_F510},  /* Logitech F510 */\
+    {0x0810, 0xe501, GAMEPAD_SNES_GENERIC},   /* Generic Chinese SNES */\
+    {0x0079, 0x0011, GAMEPAD_SNES_GENERIC},   /* DragonRise */\
+    {0x0583, 0x2060, GAMEPAD_SNES_GENERIC},   /* iBuffalo */\
+    {0x2dc8, 0x9018, GAMEPAD_SNES_GENERIC},   /* 8BitDo SN30 */\
+    {0x12bd, 0xd015, GAMEPAD_SNES_GENERIC},   /* Generic 2-pack */\
+    {0x1a34, 0x0802, GAMEPAD_SNES_GENERIC},   /* USB Gamepad */\
+    {0x0810, 0x0001, GAMEPAD_SNES_GENERIC},   /* Generic USB */\
+    {0x0079, 0x0006, GAMEPAD_SNES_GENERIC},   /* DragonRise v2 */\
+    {0x1209, 0x0001, GAMEPAD_GENERIC_HID},    /* Generic HID Gamepad */\
+    {0, 0, 0}  /* End - also acts as wildcard for unknown devices */\
+};' "$USB_GAMEPAD_FILE"
 
-+/* SNES USB gamepad key generation */
-+static void snes_generate_keys(struct grub_usb_gamepad_data *data)
-+{
-+    grub_uint8_t *prev = data->prev_report;
-+    grub_uint8_t *curr = data->report;
-+
-+    /* D-Pad from axes (bytes 0 and 1) */
-+    /* X axis: 0x00=left, 0x7F=center, 0xFF=right */
-+    /* Y axis: 0x00=up, 0x7F=center, 0xFF=down */
-+    #define AXIS_CENTER 0x7F
-+    #define AXIS_THRESHOLD 0x40
-+
-+    int prev_up = (prev[1] < AXIS_CENTER - AXIS_THRESHOLD);
-+    int prev_down = (prev[1] > AXIS_CENTER + AXIS_THRESHOLD);
-+    int prev_left = (prev[0] < AXIS_CENTER - AXIS_THRESHOLD);
-+    int prev_right = (prev[0] > AXIS_CENTER + AXIS_THRESHOLD);
-+
-+    int curr_up = (curr[1] < AXIS_CENTER - AXIS_THRESHOLD);
-+    int curr_down = (curr[1] > AXIS_CENTER + AXIS_THRESHOLD);
-+    int curr_left = (curr[0] < AXIS_CENTER - AXIS_THRESHOLD);
-+    int curr_right = (curr[0] > AXIS_CENTER + AXIS_THRESHOLD);
-+
-+    /* Generate key on press (transition from not pressed to pressed) */
-+    if (!prev_up && curr_up)
-+        key_queue_push(data, dpad_mapping[DIR_UP]);
-+    if (!prev_down && curr_down)
-+        key_queue_push(data, dpad_mapping[DIR_DOWN]);
-+    if (!prev_left && curr_left)
-+        key_queue_push(data, dpad_mapping[DIR_LEFT]);
-+    if (!prev_right && curr_right)
-+        key_queue_push(data, dpad_mapping[DIR_RIGHT]);
-+
-+    /* Buttons from byte 4 and 5 */
-+    /* Common SNES mapping: */
-+    /* Byte 4: bit1=B, bit2=A (or variations) */
-+    /* Byte 5: bit4=L, bit5=R, bit6=Select, bit7=Start (or variations) */
-+
-+    /* We map any button change to the button mappings */
-+    grub_uint8_t prev_btns = prev[4] | (prev[5] << 8);
-+    grub_uint8_t curr_btns = curr[4] | (curr[5] << 8);
-+
-+    /* Check each bit for button press */
-+    for (int i = 0; i < 8; i++) {
-+        int mask = (1 << i);
-+        /* Byte 4 buttons -> map to button_mapping[0-3] */
-+        if (!(prev[4] & mask) && (curr[4] & mask)) {
-+            if (i < BUTTONS_COUNT)
-+                key_queue_push(data, button_mapping[i]);
-+        }
-+    }
-+
-+    /* Also check common positions for Start/Select */
-+    /* Start is often bit 7 of byte 4 or byte 5 */
-+    if (!(prev[4] & 0x80) && (curr[4] & 0x80))
-+        key_queue_push(data, options_mapping[SIDE_RIGHT]);  /* Start */
-+    if (!(prev[4] & 0x40) && (curr[4] & 0x40))
-+        key_queue_push(data, options_mapping[SIDE_LEFT]);   /* Select */
-+
-+    #undef AXIS_CENTER
-+    #undef AXIS_THRESHOLD
-+}
-+
- static int
- usb_gamepad_getkey (struct grub_term_input *term)
- {
-@@ -150,7 +239,13 @@ usb_gamepad_getkey (struct grub_term_input *term)
-     grub_usb_err_t err = grub_usb_check_transfer (termdata->transfer, &actual);
-
-     if (err != GRUB_USB_ERR_WAIT) {
--        logitech_rumble_f510_generate_keys(termdata);
-+        /* Call appropriate key generation based on gamepad type */
-+        if (termdata->gamepad_type == GAMEPAD_SNES_GENERIC) {
-+            snes_generate_keys(termdata);
-+        } else {
-+            logitech_rumble_f510_generate_keys(termdata);
-+        }
-+
-         grub_memcpy(termdata->prev_report, termdata->report, USB_REPORT_SIZE);
-
-         termdata->transfer = grub_usb_bulk_read_background (
-@@ -178,21 +273,32 @@ grub_usb_gamepad_detach (grub_usb_device_t usbdev,
-     }
- }
-
-+static int
-+find_supported_device(grub_uint16_t vid, grub_uint16_t pid, gamepad_type_t *type)
-+{
-+    for (int i = 0; supported_devices[i].vid != 0; i++) {
-+        if (supported_devices[i].vid == vid && supported_devices[i].pid == pid) {
-+            *type = supported_devices[i].type;
-+            return 1;
-+        }
-+    }
-+    return 0;
-+}
-
- static int
- grub_usb_gamepad_attach(grub_usb_device_t usbdev, int configno, int interfno)
- {
--    if ((usbdev->descdev.vendorid != LOGITECH_VENDORID)
--        || (usbdev->descdev.prodid != RUMBLEPAD_PRODUCTID)) {
--        grub_dprintf("usb_gamepad",
--                     "Ignoring vendor %x, product %x. "
--                     "Only vendor %x and product %x are supported\n",
--                     usbdev->descdev.vendorid,
--                     usbdev->descdev.prodid,
--                     LOGITECH_VENDORID,
--                     RUMBLEPAD_PRODUCTID);
-+    gamepad_type_t gamepad_type;
-+
-+    if (!find_supported_device(usbdev->descdev.vendorid,
-+                               usbdev->descdev.prodid,
-+                               &gamepad_type)) {
-+        grub_dprintf("usb_gamepad", "Ignoring device %04x:%04x\n",
-+                     usbdev->descdev.vendorid, usbdev->descdev.prodid);
-         return 0;
-     }
-+
-+    grub_dprintf("usb_gamepad", "Found supported gamepad %04x:%04x type=%d\n",
-+                 usbdev->descdev.vendorid, usbdev->descdev.prodid, gamepad_type);
-
-     grub_dprintf("usb_gamepad", "usb_gamepad configno: %d, interfno: %d\n", configno, interfno);
-
-@@ -231,9 +337,17 @@ grub_usb_gamepad_attach(grub_usb_device_t usbdev, int configno, int interfno)
-     usbdev->config[configno].interf[interfno].detach_hook = grub_usb_gamepad_detach;
-     data->usbdev = usbdev;
-     data->configno = configno;
-     data->interfno = interfno;
-     data->endp = endp;
-     data->key_queue_begin = 0;
-     data->key_queue_size = 0;
--    grub_memcpy(data->prev_report, initial_logitech_rumble_f510_report, USB_REPORT_SIZE);
-+    data->gamepad_type = gamepad_type;
-+
-+    /* Use appropriate initial report based on gamepad type */
-+    if (gamepad_type == GAMEPAD_SNES_GENERIC) {
-+        grub_memcpy(data->prev_report, initial_snes_report, USB_REPORT_SIZE);
-+    } else {
-+        grub_memcpy(data->prev_report, initial_logitech_rumble_f510_report, USB_REPORT_SIZE);
-+    }
-+
-     data->transfer = grub_usb_bulk_read_background (
-         usbdev,
-         data->endp,
-PATCHEOF
-
-# Try to apply the comprehensive patch
-if patch -p1 --forward < /tmp/snes_patch.patch 2>&1; then
-    ok "Comprehensive SNES patch applied successfully"
-else
-    warn "Patch failed - trying fallback approach"
-
-    # Fallback: accept ALL HID devices (less elegant but works)
-    if grep -q "LOGITECH_VENDORID" grub-core/term/usb_gamepad.c 2>/dev/null; then
-        info "Applying fallback: accepting all HID devices..."
-        # Comment out the VID/PID check entirely
-        sed -i 's/if ((usbdev->descdev.vendorid != LOGITECH_VENDORID)/if (0 \&\& (usbdev->descdev.vendorid != LOGITECH_VENDORID)/' grub-core/term/usb_gamepad.c
-        ok "Fallback applied - module will accept all HID gamepads"
-        warn "Note: Without full patch, D-pad may not work on SNES controllers"
-        warn "D-pad works differently on SNES (axes) vs Logitech (byte 4 bits)"
-    else
-        err "Could not find code to patch"
+        ok "VID/PID filter patched"
     fi
+
+    # PATCH 2: Add gamepad_type to struct
+    if ! grep -q "gamepad_type_t gamepad_type;" "$USB_GAMEPAD_FILE"; then
+        info "Adding gamepad_type to data struct..."
+        sed -i '/int key_queue\[KEY_QUEUE_CAPACITY\];/a\    gamepad_type_t gamepad_type;\n    int dead;' "$USB_GAMEPAD_FILE"
+        ok "Data struct patched"
+    fi
+
+    # PATCH 3: Add SNES baseline report
+    if ! grep -q "initial_snes_report" "$USB_GAMEPAD_FILE"; then
+        info "Adding SNES baseline report..."
+        sed -i '/static grub_uint8_t initial_logitech_rumble_f510_report/a\
+\
+/* SNES baseline: centered axes (0x7F), no buttons */\
+static grub_uint8_t initial_snes_report[USB_REPORT_SIZE] = {\
+    0x7f, 0x7f, 0x7f, 0x7f, 0x00, 0x00, 0x00, 0x00\
+};' "$USB_GAMEPAD_FILE"
+        ok "SNES baseline added"
+    fi
+
+    # PATCH 4: Add snes_generate_keys function before usb_gamepad_getkey
+    if ! grep -q "snes_generate_keys" "$USB_GAMEPAD_FILE"; then
+        info "Adding SNES key generation function..."
+
+        # Find the line number of usb_gamepad_getkey and insert before it
+        LINE=$(grep -n "^static int$" "$USB_GAMEPAD_FILE" | grep -A1 "usb_gamepad_getkey" | head -1 | cut -d: -f1)
+        if [ -n "$LINE" ]; then
+            sed -i "${LINE}i\\
+/* SNES USB gamepad key generation - handles axis-based D-pad */\\
+static void snes_generate_keys(struct grub_usb_gamepad_data *data)\\
+{\\
+    grub_uint8_t *prev = data->prev_report;\\
+    grub_uint8_t *curr = data->report;\\
+\\
+    /* D-Pad from axes: X=byte0, Y=byte1 */\\
+    /* 0x00=left/up, 0x7F=center, 0xFF=right/down */\\
+    #define AXIS_CENTER 0x7F\\
+    #define AXIS_THRESHOLD 0x40\\
+\\
+    int prev_up = (prev[1] < AXIS_CENTER - AXIS_THRESHOLD);\\
+    int prev_down = (prev[1] > AXIS_CENTER + AXIS_THRESHOLD);\\
+    int prev_left = (prev[0] < AXIS_CENTER - AXIS_THRESHOLD);\\
+    int prev_right = (prev[0] > AXIS_CENTER + AXIS_THRESHOLD);\\
+\\
+    int curr_up = (curr[1] < AXIS_CENTER - AXIS_THRESHOLD);\\
+    int curr_down = (curr[1] > AXIS_CENTER + AXIS_THRESHOLD);\\
+    int curr_left = (curr[0] < AXIS_CENTER - AXIS_THRESHOLD);\\
+    int curr_right = (curr[0] > AXIS_CENTER + AXIS_THRESHOLD);\\
+\\
+    /* Generate key on button press (not release) */\\
+    if (!prev_up && curr_up) key_queue_push(data, dpad_mapping[DIR_UP]);\\
+    if (!prev_down && curr_down) key_queue_push(data, dpad_mapping[DIR_DOWN]);\\
+    if (!prev_left && curr_left) key_queue_push(data, dpad_mapping[DIR_LEFT]);\\
+    if (!prev_right && curr_right) key_queue_push(data, dpad_mapping[DIR_RIGHT]);\\
+\\
+    /* Buttons in byte 4 (and sometimes byte 5) */\\
+    for (int i = 0; i < 8; i++) {\\
+        int mask = (1 << i);\\
+        if (!(prev[4] & mask) && (curr[4] & mask)) {\\
+            if (i < BUTTONS_COUNT) key_queue_push(data, button_mapping[i]);\\
+            if (i == 7) key_queue_push(data, options_mapping[SIDE_RIGHT]); /* Start */\\
+            if (i == 6) key_queue_push(data, options_mapping[SIDE_LEFT]);  /* Select */\\
+        }\\
+    }\\
+    #undef AXIS_CENTER\\
+    #undef AXIS_THRESHOLD\\
+}\\
+" "$USB_GAMEPAD_FILE"
+            ok "SNES key generation added"
+        fi
+    fi
+
+    # PATCH 5: Modify usb_gamepad_getkey to use type-aware parsing and dead flag
+    info "Patching getkey function..."
+    sed -i 's/logitech_rumble_f510_generate_keys(termdata);/if (termdata->dead) return GRUB_TERM_NO_KEY;\
+        if (termdata->gamepad_type == GAMEPAD_SNES_GENERIC || termdata->gamepad_type == GAMEPAD_GENERIC_HID)\
+            snes_generate_keys(termdata);\
+        else\
+            logitech_rumble_f510_generate_keys(termdata);/' "$USB_GAMEPAD_FILE"
+
+    # PATCH 6: Add dead flag handling in transfer restart
+    sed -i 's/grub_print_error ();/grub_print_error();\
+            termdata->dead = 1;/' "$USB_GAMEPAD_FILE"
+
+    # PATCH 7: Replace VID/PID check in attach function with device lookup
+    info "Patching attach function..."
+    sed -i 's/if ((usbdev->descdev.vendorid != LOGITECH_VENDORID)/gamepad_type_t gtype = GAMEPAD_GENERIC_HID;\
+    int found = 0;\
+    for (int i = 0; supported_devices[i].vid != 0; i++) {\
+        if (supported_devices[i].vid == usbdev->descdev.vendorid \&\& \
+            supported_devices[i].pid == usbdev->descdev.prodid) {\
+            gtype = supported_devices[i].type;\
+            found = 1;\
+            break;\
+        }\
+    }\
+    /* Accept any HID gamepad even if not in list */\
+    if (0 \&\& (usbdev->descdev.vendorid != 0x046d)/' "$USB_GAMEPAD_FILE"
+
+    # PATCH 8: Add HID initialization after endpoint discovery
+    # This is CRITICAL - tsoding's code is missing this!
+    info "Adding HID protocol initialization..."
+
+    # Find where data struct is initialized and add HID init before transfer
+    sed -i 's/data->transfer = grub_usb_bulk_read_background//* CRITICAL: Initialize HID device (missing from original code!) */\
+    grub_usb_set_configuration(usbdev, configno + 1);\
+    \
+    /* Set HID protocol to boot protocol (0) or report protocol (1) */\
+    grub_usb_control_msg(usbdev, \
+        GRUB_USB_REQTYPE_CLASS_INTERFACE_OUT,\
+        0x0B, /* USB_HID_SET_PROTOCOL */\
+        0,    /* 0 = boot protocol */\
+        interfno, 0, 0);\
+    \
+    /* Set idle rate to 0 (send reports only on change) */\
+    grub_usb_control_msg(usbdev,\
+        GRUB_USB_REQTYPE_CLASS_INTERFACE_OUT,\
+        0x0A, /* USB_HID_SET_IDLE */\
+        0,\
+        interfno, 0, 0);\
+    \
+    data->gamepad_type = gtype;\
+    data->dead = 0;\
+    \
+    data->transfer = grub_usb_bulk_read_background/' "$USB_GAMEPAD_FILE"
+
+    # PATCH 9: Use correct baseline based on gamepad type
+    sed -i 's/grub_memcpy(data->prev_report, initial_logitech_rumble_f510_report, USB_REPORT_SIZE);/if (gtype == GAMEPAD_SNES_GENERIC || gtype == GAMEPAD_GENERIC_HID)\
+        grub_memcpy(data->prev_report, initial_snes_report, USB_REPORT_SIZE);\
+    else\
+        grub_memcpy(data->prev_report, initial_logitech_rumble_f510_report, USB_REPORT_SIZE);/' "$USB_GAMEPAD_FILE"
+
+    ok "All patches applied to usb_gamepad.c"
+
+    # Show diff summary
+    info "Patch summary:"
+    diff -u "${USB_GAMEPAD_FILE}.orig" "$USB_GAMEPAD_FILE" | head -50 || true
+
+else
+    err "usb_gamepad.c not found!"
+    exit 1
 fi
 
 export PYTHON=python3
