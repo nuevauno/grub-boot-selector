@@ -17,14 +17,10 @@ Use a cheap USB SNES controller to navigate GRUB menu:
 ## One-Line Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nuevauno/grub-snes-gamepad/main/install.sh | sudo bash
+curl -sSL https://github.com/nuevauno/grub-snes-gamepad/releases/latest/download/install.sh | sudo bash
 ```
 
-Or download and run manually:
-```bash
-wget https://github.com/nuevauno/grub-snes-gamepad/releases/latest/download/install.sh
-sudo bash install.sh
-```
+This always downloads the latest version automatically.
 
 ## Status
 
