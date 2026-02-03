@@ -143,7 +143,7 @@ case "$DISTRO" in
         ok "Package lists updated"
 
         start_spinner "Installing build tools (this takes ~1 min)..."
-        apt-get install -y -qq git build-essential autoconf automake gettext bison flex python3 python3-pip libusb-1.0-0-dev pkg-config 2>/dev/null
+        apt-get install -y -qq git build-essential autoconf automake autopoint gettext bison flex python3 python3-pip libusb-1.0-0-dev pkg-config fonts-unifont libfreetype-dev 2>/dev/null
         stop_spinner
         ok "APT packages installed"
         ;;
