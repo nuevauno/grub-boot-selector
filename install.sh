@@ -6,7 +6,7 @@
 # IMPORTANT: This compiles a MODIFIED version of GRUB with SNES controller support
 #
 
-VERSION="2.0"
+VERSION="2.1"
 
 set -euo pipefail
 
@@ -124,109 +124,172 @@ if [ -n "$CTRL" ]; then
 fi
 
 ########################################
-# STEP 3: Test controller (optional)
+# STEP 3: Test controller buttons
 ########################################
-step "3/5" "Test controller (optional)"
+step "3/5" "Test controller buttons"
 
-echo -e "  ${YELLOW}Do you want to test the controller buttons?${NC}"
-read -r -p "  Test controller? [Y/n] " TEST_CTRL
+info "Installing USB library..."
+pip3 install -q pyusb 2>/dev/null || pip3 install -q --break-system-packages pyusb 2>/dev/null || true
 
-if [ "$TEST_CTRL" != "n" ] && [ "$TEST_CTRL" != "N" ]; then
-    info "Installing USB library..."
-    pip3 install -q pyusb 2>/dev/null || pip3 install -q --break-system-packages pyusb 2>/dev/null || true
+if ! python3 -c "import usb.core" 2>/dev/null; then
+    warn "Could not install pyusb - skipping button test"
+    echo ""
+    read -r -p "  Press ENTER to continue to build..." _
+else
+    echo ""
+    echo -e "  ${YELLOW}${BOLD}Button Test - Press each button when asked${NC}"
+    echo ""
 
-    if python3 -c "import usb.core" 2>/dev/null; then
-        ok "USB library ready"
-        echo ""
-        echo -e "  ${YELLOW}Press buttons on your controller (10 sec test)${NC}"
-        echo ""
-
-        python3 << 'PYEOF' || true
+    # Run interactive button test
+    MAPPER_OK=0
+    python3 << 'PYEOF'
 import sys, time
+
 try:
     import usb.core, usb.util
 except:
-    print("  pyusb not available, skipping test")
-    sys.exit(0)
+    print("  ERROR: pyusb not available")
+    sys.exit(1)
 
-G='\033[92m'; Y='\033[93m'; N='\033[0m'
+G='\033[92m'; Y='\033[93m'; R='\033[91m'; B='\033[1m'; N='\033[0m'
 
-# Find HID device
-dev = None
-for d in usb.core.find(find_all=True):
-    try:
-        for c in d:
-            for i in c:
-                if i.bInterfaceClass == 3 and not (i.bInterfaceSubClass == 1 and i.bInterfaceProtocol in [1,2]):
-                    dev = d
-                    break
-            if dev: break
-        if dev: break
-    except: pass
+def find_controller():
+    for d in usb.core.find(find_all=True):
+        try:
+            for c in d:
+                for i in c:
+                    if i.bInterfaceClass == 3:
+                        if i.bInterfaceSubClass == 1 and i.bInterfaceProtocol in [1,2]:
+                            continue
+                        return d
+        except:
+            pass
+    return None
 
+dev = find_controller()
 if not dev:
-    print("  No HID controller found")
-    sys.exit(0)
+    print(f"  {R}ERROR:{N} No controller found!")
+    sys.exit(1)
 
-print(f"  {G}Found:{N} VID=0x{dev.idVendor:04x} PID=0x{dev.idProduct:04x}")
+print(f"  {G}Controller:{N} VID=0x{dev.idVendor:04x} PID=0x{dev.idProduct:04x}")
 
+# Setup
 try:
     if dev.is_kernel_driver_active(0):
         dev.detach_kernel_driver(0)
+except: pass
+
+try:
     dev.set_configuration()
-    cfg = dev.get_active_configuration()
-    intf = cfg[(0,0)]
-    ep = None
-    for e in intf:
-        if usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN:
-            ep = e
-            break
-    if not ep:
-        print("  No endpoint found")
-        sys.exit(0)
+except: pass
 
-    # Get baseline
-    reports = []
-    for _ in range(10):
-        try:
-            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 100))
-            reports.append(r)
-        except: pass
-        time.sleep(0.05)
+cfg = dev.get_active_configuration()
+intf = cfg[(0,0)]
+ep = None
+for e in intf:
+    if usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN:
+        ep = e
+        break
 
-    if not reports:
-        print("  Cannot read from controller")
-        sys.exit(0)
+if not ep:
+    print(f"  {R}ERROR:{N} No input endpoint!")
+    sys.exit(1)
 
-    baseline = max(set(reports), key=reports.count)
-    print(f"  {G}Baseline:{N} {baseline.hex()}")
-    print(f"\n  {Y}Press buttons now (watching for 10 seconds)...{N}\n")
+# Get baseline - DON'T PRESS ANYTHING
+print(f"\n  {Y}DO NOT press any button for 2 seconds...{N}")
+time.sleep(1)
 
-    seen = set()
+reports = []
+for _ in range(20):
+    try:
+        r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 100))
+        reports.append(r)
+    except:
+        pass
+    time.sleep(0.05)
+
+if not reports:
+    print(f"  {R}ERROR:{N} Cannot read from controller!")
+    sys.exit(1)
+
+baseline = max(set(reports), key=reports.count)
+print(f"  {G}OK:{N} Baseline captured: {baseline.hex()}")
+
+# Test each button
+buttons = [
+    ("D-PAD UP", 15),
+    ("D-PAD DOWN", 15),
+    ("A or any button", 15),
+    ("START", 15),
+]
+
+detected = 0
+print(f"\n  {B}Now press each button when asked:{N}\n")
+
+for btn_name, timeout in buttons:
+    sys.stdout.write(f"  {Y}>>>{N} Press {B}{btn_name}{N} {Y}<<<{N} ")
+    sys.stdout.flush()
+
+    found = False
     start = time.time()
-    while time.time() - start < 10:
+
+    while time.time() - start < timeout:
         try:
             r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
             if r != baseline:
-                h = r.hex()
-                if h not in seen:
-                    seen.add(h)
-                    changes = []
-                    for i in range(min(len(baseline), len(r))):
-                        if baseline[i] != r[i]:
-                            changes.append(f"byte{i}:0x{baseline[i]:02x}->0x{r[i]:02x}")
-                    print(f"  {G}Detected:{N} {' '.join(changes)}")
-        except: pass
+                # Found a change!
+                changes = []
+                for i in range(min(len(baseline), len(r))):
+                    if baseline[i] != r[i]:
+                        changes.append(f"byte{i}: 0x{baseline[i]:02x}->0x{r[i]:02x}")
+
+                if changes:
+                    print(f"{G}OK!{N} ({', '.join(changes)})")
+                    detected += 1
+                    found = True
+
+                    # Wait for release
+                    time.sleep(0.2)
+                    release_start = time.time()
+                    while time.time() - release_start < 2:
+                        try:
+                            r2 = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
+                            if r2 == baseline:
+                                break
+                        except:
+                            break
+                        time.sleep(0.01)
+                    break
+        except:
+            pass
         time.sleep(0.01)
 
-    print(f"\n  {G}Test complete!{N} Detected {len(seen)} unique button combinations")
-except Exception as e:
-    print(f"  Error: {e}")
+    if not found:
+        print(f"{Y}TIMEOUT{N} (no press detected)")
+
+    time.sleep(0.3)
+
+print(f"\n  {'='*50}")
+print(f"\n  {B}Result:{N} {detected}/4 buttons detected")
+
+if detected >= 2:
+    print(f"  {G}Controller is working!{N}")
+    sys.exit(0)
+else:
+    print(f"  {R}Not enough buttons detected.{N}")
+    print(f"  {Y}The controller might still work in GRUB.{N}")
+    sys.exit(1)
 PYEOF
-        echo ""
-    else
-        warn "Could not load USB library, skipping test"
+
+    MAPPER_EXIT=$?
+    echo ""
+
+    if [ $MAPPER_EXIT -ne 0 ]; then
+        echo -e "  ${YELLOW}Button test had issues, but we'll continue anyway.${NC}"
     fi
+
+    echo ""
+    read -r -p "  Press ENTER to continue to build step..." _
 fi
 
 ########################################
