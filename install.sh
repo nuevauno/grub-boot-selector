@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# GRUB SNES Gamepad Installer v0.3
+# GRUB SNES Gamepad Installer v0.4
 # https://github.com/nuevauno/grub-snes-gamepad
 #
 
@@ -20,7 +20,7 @@ print_header() {
     clear
     echo ""
     echo -e "${CYAN}${BOLD}=======================================================${NC}"
-    echo -e "${CYAN}${BOLD}       GRUB SNES Gamepad Installer v0.3                ${NC}"
+    echo -e "${CYAN}${BOLD}       GRUB SNES Gamepad Installer v0.4                ${NC}"
     echo -e "${CYAN}${BOLD}       Control your bootloader with a game controller  ${NC}"
     echo -e "${CYAN}${BOLD}=======================================================${NC}"
     echo ""
@@ -36,16 +36,6 @@ ok() { echo -e "  ${GREEN}[OK]${NC} $1"; }
 err() { echo -e "  ${RED}[ERROR]${NC} $1"; }
 info() { echo -e "  ${CYAN}[INFO]${NC} $1"; }
 warn() { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
-
-show_progress() {
-    local msg="$1"
-    echo -ne "  [....] ${msg}\r"
-}
-
-show_done() {
-    local msg="$1"
-    echo -e "  ${GREEN}[DONE]${NC} ${msg}"
-}
 
 # Check root
 if [ "$EUID" -ne 0 ]; then
@@ -64,7 +54,7 @@ print_step 1 6 "Checking system"
 # Detect distro
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-    DISTRO=$ID
+    DISTRO="$ID"
 else
     DISTRO="unknown"
 fi
@@ -100,7 +90,7 @@ ok "Platform: $GRUB_PLATFORM"
 #######################################
 print_step 2 6 "Installing dependencies"
 
-case $DISTRO in
+case "$DISTRO" in
     ubuntu|debian|linuxmint|pop)
         info "Installing packages with apt (this may take a minute)..."
         apt-get update -qq
@@ -123,8 +113,11 @@ case $DISTRO in
 esac
 
 # Install pyusb
-pip3 install pyusb -q 2>/dev/null || pip install pyusb -q 2>/dev/null || true
-ok "Python USB library ready"
+if pip3 install pyusb -q 2>/dev/null || pip install pyusb -q 2>/dev/null; then
+    ok "Python USB library ready"
+else
+    warn "Could not install pyusb via pip, will try in Python"
+fi
 
 #######################################
 # STEP 3: Detect controller
@@ -133,7 +126,7 @@ print_step 3 6 "Detecting USB controller"
 
 echo -e "  ${YELLOW}Please connect your SNES USB controller now${NC}"
 echo ""
-read -p "  Press ENTER when connected... "
+read -p "  Press ENTER when connected... " DUMMY
 echo ""
 
 # Find controllers
@@ -149,9 +142,10 @@ if [ -z "$CONTROLLER_LINE" ]; then
     exit 1
 fi
 
-CONTROLLER_ID=$(echo "$CONTROLLER_LINE" | grep -oP 'ID \K[0-9a-f]+:[0-9a-f]+')
-VENDOR_ID="0x$(echo $CONTROLLER_ID | cut -d: -f1)"
-PRODUCT_ID="0x$(echo $CONTROLLER_ID | cut -d: -f2)"
+# Extract ID using sed (more portable than grep -P)
+CONTROLLER_ID=$(echo "$CONTROLLER_LINE" | sed -n 's/.*ID \([0-9a-f]*:[0-9a-f]*\).*/\1/p')
+VENDOR_ID="0x$(echo "$CONTROLLER_ID" | cut -d: -f1)"
+PRODUCT_ID="0x$(echo "$CONTROLLER_ID" | cut -d: -f2)"
 
 ok "Found: $CONTROLLER_LINE"
 ok "VID: $VENDOR_ID  PID: $PRODUCT_ID"
@@ -161,15 +155,22 @@ ok "VID: $VENDOR_ID  PID: $PRODUCT_ID"
 #######################################
 print_step 4 6 "Testing controller"
 
-python3 << 'PYEOF'
-import os, sys, time
+# Create Python script in temp file to avoid heredoc issues
+PYSCRIPT=$(mktemp /tmp/mapper_XXXXXX.py)
+
+cat > "$PYSCRIPT" << 'ENDPYTHON'
+import os
+import sys
+import time
+import json
+import subprocess
 
 try:
     import usb.core
     import usb.util
 except ImportError:
     print("  Installing pyusb...")
-    os.system(sys.executable + " -m pip install pyusb -q")
+    subprocess.run([sys.executable, "-m", "pip", "install", "pyusb", "-q"], check=False)
     import usb.core
     import usb.util
 
@@ -181,66 +182,76 @@ DIM = '\033[2m'
 NC = '\033[0m'
 
 def ok(t):
-    print(f"  {GREEN}[OK]{NC} {t}")
+    print("  " + GREEN + "[OK]" + NC + " " + t)
 
 def warn(t):
-    print(f"  {YELLOW}[WARN]{NC} {t}")
+    print("  " + YELLOW + "[WARN]" + NC + " " + t)
 
 KNOWN = {
     (0x0810, 0xe501): "Generic SNES",
     (0x0079, 0x0011): "DragonRise",
     (0x0583, 0x2060): "iBuffalo",
     (0x2dc8, 0x9018): "8BitDo",
+    (0x12bd, 0xd015): "Generic 2-pack",
+    (0x1a34, 0x0802): "USB Gamepad",
 }
 
 # Find controller
 dev = None
 for d in usb.core.find(find_all=True):
-    if (d.idVendor, d.idProduct) in KNOWN or d.bDeviceClass == 0:
+    key = (d.idVendor, d.idProduct)
+    if key in KNOWN or d.bDeviceClass == 0:
         try:
             for cfg in d:
                 for intf in cfg:
                     if intf.bInterfaceClass == 3:
                         dev = d
                         break
-        except:
+                if dev:
+                    break
+        except Exception:
             pass
+    if dev:
+        break
 
 if not dev:
-    print(f"  {RED}[ERROR]{NC} No controller found")
+    print("  " + RED + "[ERROR]" + NC + " No controller found")
     sys.exit(1)
 
 name = KNOWN.get((dev.idVendor, dev.idProduct), "USB Controller")
-ok(f"Controller: {name}")
+ok("Controller: " + name)
 
 # Setup
 try:
     if dev.is_kernel_driver_active(0):
         dev.detach_kernel_driver(0)
-except:
+except Exception:
     pass
 
 try:
     dev.set_configuration()
-except:
+except Exception:
     pass
 
 # Find endpoint
 ep = None
 try:
-    for e in dev.get_active_configuration()[(0, 0)]:
+    cfg = dev.get_active_configuration()
+    intf = cfg[(0, 0)]
+    for e in intf:
         if usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN:
             ep = e
             break
-except:
+except Exception:
     pass
 
 if not ep:
-    print(f"  {RED}[ERROR]{NC} No endpoint found")
+    print("  " + RED + "[ERROR]" + NC + " No endpoint found")
     sys.exit(1)
 
 # Read baseline
-print(f"\n  {DIM}Reading baseline (don't touch controller)...{NC}")
+print("")
+print("  " + DIM + "Reading baseline (don't touch controller)..." + NC)
 time.sleep(0.5)
 
 reports = []
@@ -248,16 +259,16 @@ for _ in range(10):
     try:
         r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 100))
         reports.append(r)
-    except:
+    except Exception:
         pass
     time.sleep(0.05)
 
 if not reports:
-    print(f"  {RED}[ERROR]{NC} Cannot read controller")
+    print("  " + RED + "[ERROR]" + NC + " Cannot read controller")
     sys.exit(1)
 
 baseline = max(set(reports), key=reports.count)
-ok(f"Baseline: {baseline.hex()}")
+ok("Baseline: " + baseline.hex())
 
 # Test buttons
 buttons = [
@@ -268,10 +279,13 @@ buttons = [
 ]
 mapping = {}
 
-print(f"\n  {BOLD}Quick button test (4 buttons):{NC}\n")
+print("")
+print("  " + BOLD + "Quick button test (4 buttons):" + NC)
+print("")
 
 for display, key in buttons:
-    print(f"  {YELLOW}>>> Press {BOLD}{display}{NC}{YELLOW} <<<{NC}", end='', flush=True)
+    sys.stdout.write("  " + YELLOW + ">>> Press " + BOLD + display + NC + YELLOW + " <<<" + NC)
+    sys.stdout.flush()
 
     start = time.time()
     detected = False
@@ -281,59 +295,67 @@ for display, key in buttons:
             r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
             if r != baseline:
                 changes = []
-                for i, (a, b) in enumerate(zip(baseline, r)):
-                    if a != b:
-                        changes.append((i, a, b))
+                for i in range(min(len(baseline), len(r))):
+                    if baseline[i] != r[i]:
+                        changes.append((i, baseline[i], r[i]))
 
                 if changes:
                     mapping[key] = changes
                     i, a, b = changes[0]
-                    print(f"\r  {GREEN}[OK]{NC} {display}: Byte {i} = 0x{a:02x} -> 0x{b:02x}          ")
+                    result = "  " + GREEN + "[OK]" + NC + " " + display + ": Byte " + str(i) + " = 0x" + format(a, '02x') + " -> 0x" + format(b, '02x')
+                    print("\r" + result + "          ")
                     detected = True
 
                     # Wait for release
-                    while True:
+                    for _ in range(100):
                         try:
                             r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
                             if r == baseline:
                                 break
-                        except:
+                        except Exception:
                             break
                         time.sleep(0.01)
                     break
-        except:
+        except Exception:
             pass
         time.sleep(0.01)
 
     if not detected:
-        print(f"\r  {YELLOW}[WARN]{NC} {display}: timeout (skipped)                    ")
+        print("\r  " + YELLOW + "[WARN]" + NC + " " + display + ": timeout (skipped)                    ")
 
-print(f"\n  {GREEN}Controller working!{NC} Detected {len(mapping)}/4 buttons")
+print("")
+print("  " + GREEN + "Controller working!" + NC + " Detected " + str(len(mapping)) + "/4 buttons")
 
 # Save config
-import json
 config_dir = "/usr/local/share/grub-snes-gamepad"
-os.makedirs(config_dir, exist_ok=True)
+try:
+    os.makedirs(config_dir, exist_ok=True)
+except Exception:
+    pass
 
 config_data = {
-    'vid': f"0x{dev.idVendor:04x}",
-    'pid': f"0x{dev.idProduct:04x}",
+    'vid': "0x" + format(dev.idVendor, '04x'),
+    'pid': "0x" + format(dev.idProduct, '04x'),
     'baseline': baseline.hex(),
     'mapping': {}
 }
 
 for k, v in mapping.items():
-    config_data['mapping'][k] = [(i, f"0x{a:02x}", f"0x{b:02x}") for i, a, b in v]
+    config_data['mapping'][k] = [[i, "0x" + format(a, '02x'), "0x" + format(b, '02x')] for i, a, b in v]
 
-with open(f"{config_dir}/controller.json", 'w') as f:
-    json.dump(config_data, f, indent=2)
+try:
+    with open(config_dir + "/controller.json", 'w') as f:
+        json.dump(config_data, f, indent=2)
+    ok("Config saved: " + config_dir + "/controller.json")
+except Exception as e:
+    warn("Could not save config: " + str(e))
+ENDPYTHON
 
-ok(f"Config saved: {config_dir}/controller.json")
-PYEOF
-
+python3 "$PYSCRIPT"
 MAPPER_EXIT=$?
+rm -f "$PYSCRIPT"
 
-if [ $MAPPER_EXIT -ne 0 ]; then
+if [ "$MAPPER_EXIT" -ne 0 ]; then
     err "Controller test failed"
     exit 1
 fi
@@ -346,10 +368,10 @@ print_step 5 6 "Building GRUB module"
 warn "This step compiles a custom GRUB module"
 warn "This takes 5-10 minutes on first run"
 echo ""
-read -p "  Continue with build? [Y/n] " -n 1 -r
+read -p "  Continue with build? [Y/n] " BUILD_CONFIRM
 echo ""
 
-if [[ $REPLY =~ ^[Nn]$ ]]; then
+if [ "$BUILD_CONFIRM" = "n" ] || [ "$BUILD_CONFIRM" = "N" ]; then
     info "Skipped build. Run install.sh again to build later."
     exit 0
 fi
@@ -357,39 +379,59 @@ fi
 BUILD_DIR="/tmp/grub-snes-build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
+cd "$BUILD_DIR" || { err "Cannot create build directory"; exit 1; }
 
 # Clone GRUB with gamepad support
 echo ""
 info "Cloning GRUB source (this takes a minute)..."
-git clone --depth 1 -b grub-gamepad https://github.com/tsoding/grub.git grub 2>&1 | tail -5
-ok "GRUB source downloaded"
+if git clone --depth 1 -b grub-gamepad https://github.com/tsoding/grub.git grub 2>&1 | tail -5; then
+    ok "GRUB source downloaded"
+else
+    err "Failed to clone GRUB. Check your internet connection."
+    exit 1
+fi
 
-cd grub
+cd grub || { err "Cannot enter grub directory"; exit 1; }
 
 # Bootstrap
 info "Running bootstrap (please wait)..."
-./bootstrap > ../bootstrap.log 2>&1
-ok "Bootstrap complete"
+if ./bootstrap > ../bootstrap.log 2>&1; then
+    ok "Bootstrap complete"
+else
+    err "Bootstrap failed. Check $BUILD_DIR/bootstrap.log"
+    cat ../bootstrap.log | tail -20
+    exit 1
+fi
 
 # Configure
 info "Configuring GRUB (this takes a few minutes)..."
-./configure --with-platform=$GRUB_PLATFORM > ../configure.log 2>&1
-ok "Configure complete"
+if ./configure --with-platform="$GRUB_PLATFORM" > ../configure.log 2>&1; then
+    ok "Configure complete"
+else
+    err "Configure failed. Check $BUILD_DIR/configure.log"
+    cat ../configure.log | tail -20
+    exit 1
+fi
 
 # Build
 info "Compiling GRUB (this is the slow part, please wait)..."
 echo ""
-CORES=$(nproc 2>/dev/null || echo 2)
-make -j$CORES 2>&1 | grep -E "(Compiling|Building|usb_gamepad)" | tail -20 || true
-echo ""
-ok "Compilation complete"
+CORES=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+if make -j"$CORES" > ../make.log 2>&1; then
+    ok "Compilation complete"
+else
+    err "Compilation failed. Check $BUILD_DIR/make.log"
+    cat ../make.log | tail -30
+    exit 1
+fi
 
 # Find the module
 MODULE=$(find . -name "usb_gamepad.mod" 2>/dev/null | head -1)
 
 if [ -z "$MODULE" ]; then
     err "Module not found after build!"
+    info "Looking for any .mod files..."
+    find . -name "*.mod" 2>/dev/null | head -10
     info "Check build logs in $BUILD_DIR"
     exit 1
 fi
@@ -413,12 +455,10 @@ fi
 
 # Add config if not present
 if ! grep -q "usb_gamepad" "$GRUB_CUSTOM" 2>/dev/null; then
-    cat >> "$GRUB_CUSTOM" << 'GRUBCFG'
-
-# SNES Gamepad Support - added by grub-snes-gamepad
-insmod usb_gamepad
-terminal_input --append usb_gamepad
-GRUBCFG
+    echo "" >> "$GRUB_CUSTOM"
+    echo "# SNES Gamepad Support - added by grub-snes-gamepad" >> "$GRUB_CUSTOM"
+    echo "insmod usb_gamepad" >> "$GRUB_CUSTOM"
+    echo "terminal_input --append usb_gamepad" >> "$GRUB_CUSTOM"
     ok "Added gamepad to GRUB config"
 else
     info "GRUB already configured"
@@ -427,31 +467,46 @@ fi
 # Update GRUB
 info "Updating GRUB..."
 if command -v update-grub > /dev/null 2>&1; then
-    update-grub 2>/dev/null
+    update-grub 2>/dev/null || true
+    ok "GRUB updated with update-grub"
 elif command -v grub2-mkconfig > /dev/null 2>&1; then
-    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null
+    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+    ok "GRUB updated with grub2-mkconfig"
+elif command -v grub-mkconfig > /dev/null 2>&1; then
+    grub-mkconfig -o "$GRUB_DIR/grub.cfg" 2>/dev/null || true
+    ok "GRUB updated with grub-mkconfig"
 else
-    grub-mkconfig -o "$GRUB_DIR/grub.cfg" 2>/dev/null
+    warn "Could not find grub update command. Please run update-grub manually."
 fi
-ok "GRUB updated"
 
 # Cleanup
+cd /
 rm -rf "$BUILD_DIR"
 ok "Cleaned up build files"
 
 # Create uninstaller
 mkdir -p /usr/local/share/grub-snes-gamepad
-cat > /usr/local/share/grub-snes-gamepad/uninstall.sh << 'UNINSTALL'
+
+cat > /usr/local/share/grub-snes-gamepad/uninstall.sh << 'ENDUNINSTALL'
 #!/bin/bash
 echo "Uninstalling GRUB SNES Gamepad..."
-rm -f /boot/grub*/*/usb_gamepad.mod
+rm -f /boot/grub/x86_64-efi/usb_gamepad.mod 2>/dev/null
+rm -f /boot/grub/i386-pc/usb_gamepad.mod 2>/dev/null
+rm -f /boot/grub2/x86_64-efi/usb_gamepad.mod 2>/dev/null
+rm -f /boot/grub2/i386-pc/usb_gamepad.mod 2>/dev/null
 if [ -f /etc/grub.d/40_custom.backup-snes ]; then
     cp /etc/grub.d/40_custom.backup-snes /etc/grub.d/40_custom
+    echo "Restored GRUB config"
 fi
-update-grub 2>/dev/null || grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+if command -v update-grub > /dev/null 2>&1; then
+    update-grub 2>/dev/null
+elif command -v grub2-mkconfig > /dev/null 2>&1; then
+    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null
+fi
 rm -rf /usr/local/share/grub-snes-gamepad
-echo "Done!"
-UNINSTALL
+echo "Done! GRUB SNES Gamepad has been uninstalled."
+ENDUNINSTALL
+
 chmod +x /usr/local/share/grub-snes-gamepad/uninstall.sh
 
 #######################################
