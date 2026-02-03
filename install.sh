@@ -6,7 +6,7 @@
 # IMPORTANT: This compiles a MODIFIED version of GRUB with SNES controller support
 #
 
-VERSION="2.1"
+VERSION="2.2"
 
 set -euo pipefail
 
@@ -99,7 +99,7 @@ step "2/5" "Detecting controller"
 
 echo -e "  ${YELLOW}Connect your SNES USB controller now${NC}"
 echo ""
-read -r -p "  Press ENTER when ready... " _
+read -r -p "  Press ENTER when ready... "
 
 CTRL=$(lsusb | grep -iE "game|pad|joystick|snes|0810|0079|0583|2dc8|12bd|1a34" | head -1 || true)
 
@@ -134,14 +134,16 @@ pip3 install -q pyusb 2>/dev/null || pip3 install -q --break-system-packages pyu
 if ! python3 -c "import usb.core" 2>/dev/null; then
     warn "Could not install pyusb - skipping button test"
     echo ""
-    read -r -p "  Press ENTER to continue to build..." _
+    read -r -p "  Press ENTER to continue to build... "
 else
     echo ""
     echo -e "  ${YELLOW}${BOLD}Button Test - Press each button when asked${NC}"
     echo ""
 
     # Run interactive button test
-    MAPPER_OK=0
+    # IMPORTANT: Disable set -e here because the Python test is informational only
+    # We want to continue even if the test fails or detects few buttons
+    set +e
     python3 << 'PYEOF'
 import sys, time
 
@@ -149,55 +151,79 @@ try:
     import usb.core, usb.util
 except:
     print("  ERROR: pyusb not available")
-    sys.exit(1)
+    sys.exit(2)
 
 G='\033[92m'; Y='\033[93m'; R='\033[91m'; B='\033[1m'; N='\033[0m'
 
+# Known SNES controllers - check these first
+KNOWN_VIDS_PIDS = [
+    (0x0810, 0xe501), (0x0079, 0x0011), (0x0583, 0x2060),
+    (0x2dc8, 0x9018), (0x12bd, 0xd015), (0x1a34, 0x0802),
+    (0x0810, 0x0001), (0x0079, 0x0006),
+]
+
 def find_controller():
+    # First: check known controllers by VID/PID
+    for d in usb.core.find(find_all=True):
+        if (d.idVendor, d.idProduct) in KNOWN_VIDS_PIDS:
+            return d
+    # Second: any HID device that's not keyboard/mouse
     for d in usb.core.find(find_all=True):
         try:
-            for c in d:
-                for i in c:
-                    if i.bInterfaceClass == 3:
-                        if i.bInterfaceSubClass == 1 and i.bInterfaceProtocol in [1,2]:
-                            continue
+            for cfg in d:
+                for intf in cfg:
+                    if intf.bInterfaceClass == 3:  # HID
+                        if intf.bInterfaceSubClass == 1 and intf.bInterfaceProtocol in [1, 2]:
+                            continue  # Skip keyboard/mouse
                         return d
-        except:
+        except Exception:
             pass
+    return None
+
+def find_interrupt_in_endpoint(dev):
+    """Find INTERRUPT IN endpoint - CRITICAL for gamepad input"""
+    try:
+        dev.set_configuration()
+    except Exception:
+        pass
+    try:
+        cfg = dev.get_active_configuration()
+        for intf in cfg:
+            for ep in intf:
+                # Must be INTERRUPT type AND IN direction
+                is_in = usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN
+                is_intr = usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_INTR
+                if is_in and is_intr:
+                    return ep
+    except Exception as e:
+        print(f"  {Y}Warning:{N} {e}")
     return None
 
 dev = find_controller()
 if not dev:
     print(f"  {R}ERROR:{N} No controller found!")
-    sys.exit(1)
+    sys.exit(2)
 
-print(f"  {G}Controller:{N} VID=0x{dev.idVendor:04x} PID=0x{dev.idProduct:04x}")
+print(f"  {G}Found:{N} VID=0x{dev.idVendor:04x} PID=0x{dev.idProduct:04x}")
 
-# Setup
+# Detach kernel driver
 try:
     if dev.is_kernel_driver_active(0):
         dev.detach_kernel_driver(0)
-except: pass
+        print(f"  {G}OK:{N} Detached kernel driver")
+except Exception:
+    pass
 
-try:
-    dev.set_configuration()
-except: pass
-
-cfg = dev.get_active_configuration()
-intf = cfg[(0,0)]
-ep = None
-for e in intf:
-    if usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN:
-        ep = e
-        break
-
+# Find INTERRUPT IN endpoint (CRITICAL!)
+ep = find_interrupt_in_endpoint(dev)
 if not ep:
-    print(f"  {R}ERROR:{N} No input endpoint!")
-    sys.exit(1)
+    print(f"  {R}ERROR:{N} No INTERRUPT IN endpoint!")
+    print(f"  {Y}This controller might not work.{N}")
+    sys.exit(2)
 
 # Get baseline - DON'T PRESS ANYTHING
 print(f"\n  {Y}DO NOT press any button for 2 seconds...{N}")
-time.sleep(1)
+time.sleep(2)  # Fixed: was 1 second, message said 2
 
 reports = []
 for _ in range(20):
@@ -210,30 +236,36 @@ for _ in range(20):
 
 if not reports:
     print(f"  {R}ERROR:{N} Cannot read from controller!")
-    sys.exit(1)
+    print(f"  {Y}Try a different USB port.{N}")
+    sys.exit(2)  # Exit code 2 = skip test
 
 baseline = max(set(reports), key=reports.count)
 print(f"  {G}OK:{N} Baseline captured: {baseline.hex()}")
 
-# Test each button
+# Test each button - reduced timeout to 10s for better UX
 buttons = [
-    ("D-PAD UP", 15),
-    ("D-PAD DOWN", 15),
-    ("A or any button", 15),
-    ("START", 15),
+    ("D-PAD UP", 10),
+    ("D-PAD DOWN", 10),
+    ("A or any button", 10),
+    ("START", 10),
 ]
 
 detected = 0
 print(f"\n  {B}Now press each button when asked:{N}\n")
 
 for btn_name, timeout in buttons:
-    sys.stdout.write(f"  {Y}>>>{N} Press {B}{btn_name}{N} {Y}<<<{N} ")
-    sys.stdout.flush()
-
     found = False
     start = time.time()
+    last_remaining = -1
 
     while time.time() - start < timeout:
+        remaining = int(timeout - (time.time() - start))
+        # Update countdown display (only when it changes)
+        if remaining != last_remaining:
+            sys.stdout.write(f"\r  {Y}>>>{N} Press {B}{btn_name}{N} ({remaining}s) {Y}<<<{N} ")
+            sys.stdout.flush()
+            last_remaining = remaining
+
         try:
             r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
             if r != baseline:
@@ -244,6 +276,8 @@ for btn_name, timeout in buttons:
                         changes.append(f"byte{i}: 0x{baseline[i]:02x}->0x{r[i]:02x}")
 
                 if changes:
+                    # Clear the countdown and print result
+                    sys.stdout.write(f"\r  {Y}>>>{N} Press {B}{btn_name}{N}        {Y}<<<{N} ")
                     print(f"{G}OK!{N} ({', '.join(changes)})")
                     detected += 1
                     found = True
@@ -265,6 +299,8 @@ for btn_name, timeout in buttons:
         time.sleep(0.01)
 
     if not found:
+        # Clear countdown and show timeout
+        sys.stdout.write(f"\r  {Y}>>>{N} Press {B}{btn_name}{N}        {Y}<<<{N} ")
         print(f"{Y}TIMEOUT{N} (no press detected)")
 
     time.sleep(0.3)
@@ -274,22 +310,29 @@ print(f"\n  {B}Result:{N} {detected}/4 buttons detected")
 
 if detected >= 2:
     print(f"  {G}Controller is working!{N}")
-    sys.exit(0)
+elif detected >= 1:
+    print(f"  {Y}Partial detection - controller may work in GRUB.{N}")
 else:
-    print(f"  {R}Not enough buttons detected.{N}")
-    print(f"  {Y}The controller might still work in GRUB.{N}")
-    sys.exit(1)
-PYEOF
+    print(f"  {Y}No buttons detected - controller may still work in GRUB.{N}")
 
+# Always exit 0 - this test is informational only
+# The controller might work fine in GRUB even if this test fails
+sys.exit(0)
+PYEOF
     MAPPER_EXIT=$?
+    set -e  # Re-enable strict mode
+
     echo ""
 
-    if [ $MAPPER_EXIT -ne 0 ]; then
+    if [ $MAPPER_EXIT -eq 2 ]; then
+        echo -e "  ${YELLOW}Button test skipped (controller issue).${NC}"
+        echo -e "  ${YELLOW}We'll continue with the build anyway.${NC}"
+    elif [ $MAPPER_EXIT -ne 0 ]; then
         echo -e "  ${YELLOW}Button test had issues, but we'll continue anyway.${NC}"
     fi
 
     echo ""
-    read -r -p "  Press ENTER to continue to build step..." _
+    read -r -p "  Press ENTER to continue to build step... "
 fi
 
 ########################################
