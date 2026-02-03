@@ -1,11 +1,13 @@
 #!/bin/bash
 #
-# GRUB SNES Gamepad Installer v0.7
+# GRUB SNES Gamepad Installer v0.8
 # https://github.com/nuevauno/grub-snes-gamepad
 #
 # Builds and installs a custom GRUB module for USB gamepad support
 # Based on https://github.com/tsoding/grub (grub-gamepad branch)
 #
+
+VERSION="0.8"
 
 set -Eeuo pipefail
 
@@ -72,15 +74,20 @@ print_header() {
     clear
     echo ""
     echo -e "${CYAN}${BOLD}=======================================================${NC}"
-    echo -e "${CYAN}${BOLD}       GRUB SNES Gamepad Installer v0.7                ${NC}"
+    echo -e "${CYAN}${BOLD}       GRUB SNES Gamepad Installer v${VERSION}                ${NC}"
     echo -e "${CYAN}${BOLD}       Control your bootloader with a game controller  ${NC}"
     echo -e "${CYAN}${BOLD}=======================================================${NC}"
+    echo ""
+    echo -e "  ${DIM}Version: ${VERSION} | github.com/nuevauno/grub-snes-gamepad${NC}"
     echo ""
 }
 
 print_step() {
     echo ""
-    echo -e "${BLUE}--- STEP ${1}/${2}: ${BOLD}${3}${NC} ---"
+    echo ""
+    echo -e "${BLUE}========================================================${NC}"
+    echo -e "${BLUE}  STEP ${1}/${2}: ${BOLD}${3}${NC}"
+    echo -e "${BLUE}========================================================${NC}"
     echo ""
 }
 
@@ -280,11 +287,18 @@ ok "VID: $CONTROLLER_VID  PID: $CONTROLLER_PID"
 #######################################
 # STEP 4: Map controller buttons (MANDATORY)
 #######################################
-print_step 4 6 "Mapping controller buttons"
+print_step 4 6 "Mapping controller buttons (MANDATORY)"
 
-echo -e "  ${YELLOW}${BOLD}IMPORTANT: You must successfully map at least 2 buttons${NC}"
-echo -e "  ${YELLOW}to verify your controller works before we build GRUB.${NC}"
+echo -e "  ${RED}${BOLD}*********************************************${NC}"
+echo -e "  ${RED}${BOLD}*  BUTTON MAPPING - MUST COMPLETE TO CONTINUE  *${NC}"
+echo -e "  ${RED}${BOLD}*********************************************${NC}"
 echo ""
+echo -e "  ${YELLOW}You will be asked to press 4 buttons.${NC}"
+echo -e "  ${YELLOW}At least 2 must be detected to continue.${NC}"
+echo ""
+echo -e "  ${CYAN}Get ready to press buttons on your controller!${NC}"
+echo ""
+sleep 2
 
 # Create Python script for button mapping
 PYSCRIPT=$(mktemp /tmp/mapper_XXXXXX.py)
