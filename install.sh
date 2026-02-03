@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# GRUB SNES Gamepad Installer v0.8
+# GRUB SNES Gamepad Installer v0.9
 # https://github.com/nuevauno/grub-snes-gamepad
 #
 # Builds and installs a custom GRUB module for USB gamepad support
 # Based on https://github.com/tsoding/grub (grub-gamepad branch)
 #
 
-VERSION="0.8"
+VERSION="0.9"
 
 set -Eeuo pipefail
 
@@ -33,8 +33,9 @@ CONTROLLER_VID=""
 CONTROLLER_PID=""
 BUTTONS_DETECTED=0
 BUILD_DIR="/tmp/grub-snes-build"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# Spinner function - runs in background
+# Spinner function - runs in background (ASCII only: |/-\)
 spinner_pid=""
 
 start_spinner() {
@@ -161,102 +162,18 @@ else
 fi
 ok "Platform: $GRUB_PLATFORM"
 
-#######################################
-# STEP 2: Install ALL dependencies
-#######################################
-print_step 2 6 "Installing dependencies"
-
-install_deps_debian() {
-    start_spinner "Updating package lists..."
-    apt-get update -qq 2>/dev/null || true
-    stop_spinner
-    ok "Package lists updated"
-
-    # Full list of packages required for GRUB compilation from git source
-    # See: https://www.gnu.org/software/grub/manual/grub/html_node/Obtaining-and-Building-GRUB.html
-    local GRUB_BUILD_DEPS="git build-essential autoconf automake autopoint autogen gettext bison flex"
-    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS python3 python3-pip python-is-python3"
-    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS libusb-1.0-0-dev pkg-config fonts-unifont libfreetype-dev"
-    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS help2man texinfo liblzma-dev xorriso"
-    # Optional but helpful
-    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS libopts25 libopts25-dev libdevmapper-dev libfuse-dev"
-
-    start_spinner "Installing build tools (this takes ~2 min)..."
-    # shellcheck disable=SC2086
-    if ! apt-get install -y -qq $GRUB_BUILD_DEPS 2>/dev/null; then
-        stop_spinner
-        warn "Some optional packages failed, trying essential packages only..."
-        start_spinner "Installing essential packages..."
-        apt-get install -y -qq git build-essential autoconf automake autopoint \
-            gettext bison flex python3 python3-pip libusb-1.0-0-dev pkg-config \
-            fonts-unifont help2man texinfo 2>/dev/null || true
-        stop_spinner
-    fi
-    ok "APT packages installed"
-}
-
-install_deps_fedora() {
-    start_spinner "Installing packages with dnf..."
-    dnf install -y -q git gcc make autoconf automake autogen gettext bison flex \
-        python3 python3-pip libusb1-devel texinfo help2man xz-devel \
-        device-mapper-devel 2>/dev/null || true
-    stop_spinner
-    ok "DNF packages installed"
-}
-
-install_deps_arch() {
-    start_spinner "Installing packages with pacman..."
-    pacman -Sy --noconfirm git base-devel autoconf automake autogen gettext bison \
-        flex python python-pip libusb texinfo help2man xz device-mapper 2>/dev/null || true
-    stop_spinner
-    ok "Pacman packages installed"
-}
-
-case "$DISTRO" in
-    ubuntu|debian|linuxmint|pop)
-        install_deps_debian
-        ;;
-    fedora)
-        install_deps_fedora
-        ;;
-    arch|manjaro)
-        install_deps_arch
-        ;;
-    *)
-        warn "Unknown distro '$DISTRO', trying Debian-based install..."
-        install_deps_debian
-        ;;
-esac
-
-# Install pyusb - CRITICAL for controller detection
-info "Installing Python USB library..."
-if pip3 install --quiet pyusb 2>/dev/null; then
-    ok "pyusb installed via pip3"
-elif pip install --quiet pyusb 2>/dev/null; then
-    ok "pyusb installed via pip"
-else
-    # Try with --break-system-packages for newer Debian/Ubuntu
-    if pip3 install --quiet --break-system-packages pyusb 2>/dev/null; then
-        ok "pyusb installed (break-system-packages)"
-    else
-        err "Could not install pyusb"
-        err "Try manually: pip3 install pyusb"
-        exit 1
-    fi
-fi
-
-# Verify pyusb is actually importable
-if ! python3 -c "import usb.core" 2>/dev/null; then
-    err "pyusb installed but cannot be imported"
-    err "This usually means a missing dependency (libusb)"
+# Check for Python3 (needed for controller mapping)
+if ! command -v python3 > /dev/null 2>&1; then
+    err "Python3 is required but not installed"
+    info "Install with: apt install python3 python3-pip"
     exit 1
 fi
-ok "Python USB library verified"
+ok "Python3 found: $(python3 --version 2>&1)"
 
 #######################################
-# STEP 3: Detect controller
+# STEP 2: Detect controller
 #######################################
-print_step 3 6 "Detecting USB controller"
+print_step 2 6 "Detecting USB controller"
 
 echo -e "  ${YELLOW}${BOLD}Please connect your SNES USB controller now${NC}"
 echo ""
@@ -285,9 +202,9 @@ ok "Found: $CONTROLLER_LINE"
 ok "VID: $CONTROLLER_VID  PID: $CONTROLLER_PID"
 
 #######################################
-# STEP 4: Map controller buttons (MANDATORY)
+# STEP 3: Map controller buttons (MANDATORY - BEFORE installing deps)
 #######################################
-print_step 4 6 "Mapping controller buttons (MANDATORY)"
+print_step 3 6 "Mapping controller buttons (MANDATORY)"
 
 echo -e "  ${RED}${BOLD}*********************************************${NC}"
 echo -e "  ${RED}${BOLD}*  BUTTON MAPPING - MUST COMPLETE TO CONTINUE  *${NC}"
@@ -296,280 +213,229 @@ echo ""
 echo -e "  ${YELLOW}You will be asked to press 4 buttons.${NC}"
 echo -e "  ${YELLOW}At least 2 must be detected to continue.${NC}"
 echo ""
+
+# Install only pyusb for mapping (minimal dependency)
+info "Installing Python USB library for controller mapping..."
+if pip3 install --quiet pyusb 2>/dev/null; then
+    ok "pyusb installed via pip3"
+elif pip install --quiet pyusb 2>/dev/null; then
+    ok "pyusb installed via pip"
+elif pip3 install --quiet --break-system-packages pyusb 2>/dev/null; then
+    ok "pyusb installed (break-system-packages)"
+else
+    err "Could not install pyusb"
+    err "Try manually: pip3 install pyusb"
+    exit 1
+fi
+
+# Verify pyusb is actually importable
+if ! python3 -c "import usb.core" 2>/dev/null; then
+    err "pyusb installed but cannot be imported"
+    err "This usually means a missing dependency (libusb)"
+    info "Try: apt install libusb-1.0-0-dev"
+    exit 1
+fi
+ok "Python USB library verified"
+
+echo ""
 echo -e "  ${CYAN}Get ready to press buttons on your controller!${NC}"
 echo ""
 sleep 2
 
-# Create Python script for button mapping
+# Create Python script for button mapping (avoiding heredoc for Python code)
 PYSCRIPT=$(mktemp /tmp/mapper_XXXXXX.py)
 
-cat > "$PYSCRIPT" << 'ENDPYTHON'
-#!/usr/bin/env python3
-"""
-Controller Button Mapper - Embedded in install.sh
-Tests that the controller works and maps buttons interactively.
-"""
-
-import os
-import sys
-import time
-import json
-
-# pyusb should already be installed by the shell script
-import usb.core
-import usb.util
-
-# ANSI colors
-GREEN = '\033[92m'
-YELLOW = '\033[93m'
-RED = '\033[91m'
-CYAN = '\033[96m'
-BOLD = '\033[1m'
-DIM = '\033[2m'
-NC = '\033[0m'
-
-def ok(t):
-    print("  " + GREEN + "[OK]" + NC + " " + t)
-
-def err(t):
-    print("  " + RED + "[ERROR]" + NC + " " + t)
-
-def warn(t):
-    print("  " + YELLOW + "[WARN]" + NC + " " + t)
-
-def info(t):
-    print("  " + CYAN + "[INFO]" + NC + " " + t)
-
-KNOWN_CONTROLLERS = {
-    (0x0810, 0xe501): "Generic SNES",
-    (0x0079, 0x0011): "DragonRise",
-    (0x0583, 0x2060): "iBuffalo",
-    (0x2dc8, 0x9018): "8BitDo",
-    (0x12bd, 0xd015): "Generic 2-pack",
-    (0x1a34, 0x0802): "USB Gamepad",
-    (0x0810, 0x0001): "Generic USB Gamepad",
-    (0x0079, 0x0006): "DragonRise Gamepad",
-}
-
-def find_controller():
-    """Find the first game controller"""
-    for dev in usb.core.find(find_all=True):
-        key = (dev.idVendor, dev.idProduct)
-        if key in KNOWN_CONTROLLERS:
-            return dev, KNOWN_CONTROLLERS[key]
-
-        # Check if it's HID class
-        try:
-            for cfg in dev:
-                for intf in cfg:
-                    if intf.bInterfaceClass == 3:  # HID
-                        # Skip keyboards and mice
-                        if intf.bInterfaceSubClass == 1 and intf.bInterfaceProtocol in [1, 2]:
-                            continue
-                        return dev, "USB Controller"
-        except Exception:
-            pass
-
-    return None, None
-
-def setup_device(dev):
-    """Setup USB device for reading"""
-    # Detach kernel driver if active
-    try:
-        if dev.is_kernel_driver_active(0):
-            dev.detach_kernel_driver(0)
-    except Exception:
-        pass
-
-    # Set configuration
-    try:
-        dev.set_configuration()
-    except Exception:
-        pass
-
-    # Find interrupt IN endpoint
-    cfg = dev.get_active_configuration()
-    intf = cfg[(0, 0)]
-
-    ep = None
-    for endpoint in intf:
-        if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN:
-            ep = endpoint
-            break
-
-    return ep
-
-def get_baseline(dev, ep):
-    """Get baseline report (no buttons pressed)"""
-    print("")
-    info("Reading baseline (do NOT press any buttons)...")
-    time.sleep(0.5)
-
-    reports = []
-    for _ in range(15):
-        try:
-            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 100))
-            reports.append(r)
-        except Exception:
-            pass
-        time.sleep(0.05)
-
-    if not reports:
-        return None
-
-    # Use the most common report as baseline
-    baseline = max(set(reports), key=reports.count)
-    return baseline
-
-def wait_for_button(dev, ep, baseline, button_name, timeout=15):
-    """Wait for a button press and detect the change"""
-    sys.stdout.write("  " + YELLOW + ">>> Press " + BOLD + button_name + NC + YELLOW + " <<<" + NC)
-    sys.stdout.flush()
-
-    start = time.time()
-
-    while time.time() - start < timeout:
-        try:
-            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
-            if r != baseline:
-                # Found a change - button pressed
-                changes = []
-                for i in range(min(len(baseline), len(r))):
-                    if baseline[i] != r[i]:
-                        changes.append((i, baseline[i], r[i]))
-
-                if changes:
-                    i, a, b = changes[0]
-                    result = "  " + GREEN + "[OK]" + NC + " " + button_name + ": Byte " + str(i) + " = 0x" + format(a, '02x') + " -> 0x" + format(b, '02x')
-                    print("\r" + result + "                    ")
-
-                    # Wait for button release
-                    release_start = time.time()
-                    while time.time() - release_start < 2:
-                        try:
-                            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))
-                            if r == baseline:
-                                break
-                        except Exception:
-                            break
-                        time.sleep(0.01)
-
-                    return changes
-        except usb.core.USBTimeoutError:
-            pass
-        except Exception:
-            pass
-        time.sleep(0.01)
-
-    print("\r  " + YELLOW + "[TIMEOUT]" + NC + " " + button_name + ": No press detected                    ")
-    return None
-
-def main():
-    # Find controller
-    dev, name = find_controller()
-
-    if not dev:
-        err("No controller found!")
-        sys.exit(1)
-
-    ok("Controller: " + name + " (VID: 0x" + format(dev.idVendor, '04x') + " PID: 0x" + format(dev.idProduct, '04x') + ")")
-
-    # Setup device
-    ep = setup_device(dev)
-    if not ep:
-        err("Could not find USB endpoint!")
-        sys.exit(1)
-
-    ok("USB endpoint ready: 0x" + format(ep.bEndpointAddress, '02x'))
-
-    # Get baseline
-    baseline = get_baseline(dev, ep)
-    if not baseline:
-        err("Cannot read from controller!")
-        err("This may be a permissions issue or the controller is not responding.")
-        sys.exit(1)
-
-    ok("Baseline: " + baseline.hex())
-
-    # Map required buttons
-    print("")
-    print("  " + BOLD + "Press each button when prompted (15 sec timeout each):" + NC)
-    print("")
-
-    buttons_to_test = [
-        ("D-PAD UP", "up"),
-        ("D-PAD DOWN", "down"),
-        ("A BUTTON (or any face button)", "a"),
-        ("START (or any other button)", "start"),
-    ]
-
-    mapping = {}
-    buttons_detected = 0
-
-    for display_name, key in buttons_to_test:
-        result = wait_for_button(dev, ep, baseline, display_name)
-        if result:
-            mapping[key] = result
-            buttons_detected += 1
-        time.sleep(0.3)  # Brief pause between buttons
-
-    print("")
-    print("  " + "-" * 50)
-    print("")
-
-    # Report results
-    if buttons_detected >= 2:
-        ok("Controller test PASSED: " + str(buttons_detected) + "/4 buttons detected")
-        print("")
-
-        # Save config
-        config_dir = "/usr/local/share/grub-snes-gamepad"
-        try:
-            os.makedirs(config_dir, exist_ok=True)
-            config_data = {
-                'vid': "0x" + format(dev.idVendor, '04x'),
-                'pid': "0x" + format(dev.idProduct, '04x'),
-                'name': name,
-                'baseline': baseline.hex(),
-                'mapping': {}
-            }
-            for k, v in mapping.items():
-                config_data['mapping'][k] = [[i, "0x" + format(a, '02x'), "0x" + format(b, '02x')] for i, a, b in v]
-
-            with open(config_dir + "/controller.json", 'w') as f:
-                json.dump(config_data, f, indent=2)
-            ok("Config saved: " + config_dir + "/controller.json")
-        except Exception as e:
-            warn("Could not save config: " + str(e))
-
-        # Print exit code for bash to read
-        print("BUTTONS_DETECTED=" + str(buttons_detected))
-        sys.exit(0)
-    else:
-        err("Controller test FAILED: Only " + str(buttons_detected) + "/4 buttons detected")
-        err("You must successfully detect at least 2 buttons to continue.")
-        print("")
-        info("Troubleshooting:")
-        info("  1. Make sure you're pressing the buttons firmly")
-        info("  2. Try a different USB port")
-        info("  3. Try unplugging and replugging the controller")
-        info("  4. Some controllers may not be compatible")
-        print("")
-        print("BUTTONS_DETECTED=" + str(buttons_detected))
-        sys.exit(1)
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nCancelled by user")
-        sys.exit(130)
-    except Exception as e:
-        err("Unexpected error: " + str(e))
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-ENDPYTHON
+# Write Python script line by line to avoid heredoc issues
+printf '%s\n' '#!/usr/bin/env python3' > "$PYSCRIPT"
+printf '%s\n' '"""Controller Button Mapper - Tests controller and maps buttons."""' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'import os, sys, time, json' >> "$PYSCRIPT"
+printf '%s\n' 'import usb.core, usb.util' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' '# ANSI colors (ASCII only)' >> "$PYSCRIPT"
+printf '%s\n' "GREEN = '\\033[92m'" >> "$PYSCRIPT"
+printf '%s\n' "YELLOW = '\\033[93m'" >> "$PYSCRIPT"
+printf '%s\n' "RED = '\\033[91m'" >> "$PYSCRIPT"
+printf '%s\n' "CYAN = '\\033[96m'" >> "$PYSCRIPT"
+printf '%s\n' "BOLD = '\\033[1m'" >> "$PYSCRIPT"
+printf '%s\n' "DIM = '\\033[2m'" >> "$PYSCRIPT"
+printf '%s\n' "NC = '\\033[0m'" >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def ok(t): print("  " + GREEN + "[OK]" + NC + " " + t)' >> "$PYSCRIPT"
+printf '%s\n' 'def err(t): print("  " + RED + "[ERROR]" + NC + " " + t)' >> "$PYSCRIPT"
+printf '%s\n' 'def warn(t): print("  " + YELLOW + "[WARN]" + NC + " " + t)' >> "$PYSCRIPT"
+printf '%s\n' 'def info(t): print("  " + CYAN + "[INFO]" + NC + " " + t)' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'KNOWN_CONTROLLERS = {' >> "$PYSCRIPT"
+printf '%s\n' '    (0x0810, 0xe501): "Generic SNES",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x0079, 0x0011): "DragonRise",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x0583, 0x2060): "iBuffalo",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x2dc8, 0x9018): "8BitDo",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x12bd, 0xd015): "Generic 2-pack",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x1a34, 0x0802): "USB Gamepad",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x0810, 0x0001): "Generic USB Gamepad",' >> "$PYSCRIPT"
+printf '%s\n' '    (0x0079, 0x0006): "DragonRise Gamepad",' >> "$PYSCRIPT"
+printf '%s\n' '}' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def find_controller():' >> "$PYSCRIPT"
+printf '%s\n' '    """Find the first game controller"""' >> "$PYSCRIPT"
+printf '%s\n' '    for dev in usb.core.find(find_all=True):' >> "$PYSCRIPT"
+printf '%s\n' '        key = (dev.idVendor, dev.idProduct)' >> "$PYSCRIPT"
+printf '%s\n' '        if key in KNOWN_CONTROLLERS:' >> "$PYSCRIPT"
+printf '%s\n' '            return dev, KNOWN_CONTROLLERS[key]' >> "$PYSCRIPT"
+printf '%s\n' '        try:' >> "$PYSCRIPT"
+printf '%s\n' '            for cfg in dev:' >> "$PYSCRIPT"
+printf '%s\n' '                for intf in cfg:' >> "$PYSCRIPT"
+printf '%s\n' '                    if intf.bInterfaceClass == 3:' >> "$PYSCRIPT"
+printf '%s\n' '                        if intf.bInterfaceSubClass == 1 and intf.bInterfaceProtocol in [1, 2]:' >> "$PYSCRIPT"
+printf '%s\n' '                            continue' >> "$PYSCRIPT"
+printf '%s\n' '                        return dev, "USB Controller"' >> "$PYSCRIPT"
+printf '%s\n' '        except: pass' >> "$PYSCRIPT"
+printf '%s\n' '    return None, None' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def setup_device(dev):' >> "$PYSCRIPT"
+printf '%s\n' '    """Setup USB device for reading"""' >> "$PYSCRIPT"
+printf '%s\n' '    try:' >> "$PYSCRIPT"
+printf '%s\n' '        if dev.is_kernel_driver_active(0):' >> "$PYSCRIPT"
+printf '%s\n' '            dev.detach_kernel_driver(0)' >> "$PYSCRIPT"
+printf '%s\n' '    except: pass' >> "$PYSCRIPT"
+printf '%s\n' '    try: dev.set_configuration()' >> "$PYSCRIPT"
+printf '%s\n' '    except: pass' >> "$PYSCRIPT"
+printf '%s\n' '    cfg = dev.get_active_configuration()' >> "$PYSCRIPT"
+printf '%s\n' '    intf = cfg[(0, 0)]' >> "$PYSCRIPT"
+printf '%s\n' '    for endpoint in intf:' >> "$PYSCRIPT"
+printf '%s\n' '        if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN:' >> "$PYSCRIPT"
+printf '%s\n' '            return endpoint' >> "$PYSCRIPT"
+printf '%s\n' '    return None' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def get_baseline(dev, ep):' >> "$PYSCRIPT"
+printf '%s\n' '    """Get baseline report (no buttons pressed)"""' >> "$PYSCRIPT"
+printf '%s\n' '    print("")' >> "$PYSCRIPT"
+printf '%s\n' '    info("Reading baseline (do NOT press any buttons)...")' >> "$PYSCRIPT"
+printf '%s\n' '    time.sleep(0.5)' >> "$PYSCRIPT"
+printf '%s\n' '    reports = []' >> "$PYSCRIPT"
+printf '%s\n' '    for _ in range(15):' >> "$PYSCRIPT"
+printf '%s\n' '        try:' >> "$PYSCRIPT"
+printf '%s\n' '            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 100))' >> "$PYSCRIPT"
+printf '%s\n' '            reports.append(r)' >> "$PYSCRIPT"
+printf '%s\n' '        except: pass' >> "$PYSCRIPT"
+printf '%s\n' '        time.sleep(0.05)' >> "$PYSCRIPT"
+printf '%s\n' '    if not reports: return None' >> "$PYSCRIPT"
+printf '%s\n' '    return max(set(reports), key=reports.count)' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def wait_for_button(dev, ep, baseline, button_name, timeout=15):' >> "$PYSCRIPT"
+printf '%s\n' '    """Wait for a button press and detect the change"""' >> "$PYSCRIPT"
+printf '%s\n' '    sys.stdout.write("  " + YELLOW + ">>> Press " + BOLD + button_name + NC + YELLOW + " <<<" + NC)' >> "$PYSCRIPT"
+printf '%s\n' '    sys.stdout.flush()' >> "$PYSCRIPT"
+printf '%s\n' '    start = time.time()' >> "$PYSCRIPT"
+printf '%s\n' '    while time.time() - start < timeout:' >> "$PYSCRIPT"
+printf '%s\n' '        try:' >> "$PYSCRIPT"
+printf '%s\n' '            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))' >> "$PYSCRIPT"
+printf '%s\n' '            if r != baseline:' >> "$PYSCRIPT"
+printf '%s\n' '                changes = []' >> "$PYSCRIPT"
+printf '%s\n' '                for i in range(min(len(baseline), len(r))):' >> "$PYSCRIPT"
+printf '%s\n' '                    if baseline[i] != r[i]:' >> "$PYSCRIPT"
+printf '%s\n' '                        changes.append((i, baseline[i], r[i]))' >> "$PYSCRIPT"
+printf '%s\n' '                if changes:' >> "$PYSCRIPT"
+printf '%s\n' '                    i, a, b = changes[0]' >> "$PYSCRIPT"
+printf '%s\n' '                    result = "  " + GREEN + "[OK]" + NC + " " + button_name + ": Byte " + str(i) + " = 0x" + format(a, "02x") + " -> 0x" + format(b, "02x")' >> "$PYSCRIPT"
+printf '%s\n' '                    print("\\r" + result + "                    ")' >> "$PYSCRIPT"
+printf '%s\n' '                    release_start = time.time()' >> "$PYSCRIPT"
+printf '%s\n' '                    while time.time() - release_start < 2:' >> "$PYSCRIPT"
+printf '%s\n' '                        try:' >> "$PYSCRIPT"
+printf '%s\n' '                            r = bytes(dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, 50))' >> "$PYSCRIPT"
+printf '%s\n' '                            if r == baseline: break' >> "$PYSCRIPT"
+printf '%s\n' '                        except: break' >> "$PYSCRIPT"
+printf '%s\n' '                        time.sleep(0.01)' >> "$PYSCRIPT"
+printf '%s\n' '                    return changes' >> "$PYSCRIPT"
+printf '%s\n' '        except usb.core.USBTimeoutError: pass' >> "$PYSCRIPT"
+printf '%s\n' '        except: pass' >> "$PYSCRIPT"
+printf '%s\n' '        time.sleep(0.01)' >> "$PYSCRIPT"
+printf '%s\n' '    print("\\r  " + YELLOW + "[TIMEOUT]" + NC + " " + button_name + ": No press detected                    ")' >> "$PYSCRIPT"
+printf '%s\n' '    return None' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'def main():' >> "$PYSCRIPT"
+printf '%s\n' '    dev, name = find_controller()' >> "$PYSCRIPT"
+printf '%s\n' '    if not dev:' >> "$PYSCRIPT"
+printf '%s\n' '        err("No controller found!")' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(1)' >> "$PYSCRIPT"
+printf '%s\n' '    ok("Controller: " + name + " (VID: 0x" + format(dev.idVendor, "04x") + " PID: 0x" + format(dev.idProduct, "04x") + ")")' >> "$PYSCRIPT"
+printf '%s\n' '    ep = setup_device(dev)' >> "$PYSCRIPT"
+printf '%s\n' '    if not ep:' >> "$PYSCRIPT"
+printf '%s\n' '        err("Could not find USB endpoint!")' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(1)' >> "$PYSCRIPT"
+printf '%s\n' '    ok("USB endpoint ready: 0x" + format(ep.bEndpointAddress, "02x"))' >> "$PYSCRIPT"
+printf '%s\n' '    baseline = get_baseline(dev, ep)' >> "$PYSCRIPT"
+printf '%s\n' '    if not baseline:' >> "$PYSCRIPT"
+printf '%s\n' '        err("Cannot read from controller!")' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(1)' >> "$PYSCRIPT"
+printf '%s\n' '    ok("Baseline: " + baseline.hex())' >> "$PYSCRIPT"
+printf '%s\n' '    print("")' >> "$PYSCRIPT"
+printf '%s\n' '    print("  " + BOLD + "Press each button when prompted (15 sec timeout each):" + NC)' >> "$PYSCRIPT"
+printf '%s\n' '    print("")' >> "$PYSCRIPT"
+printf '%s\n' '    buttons_to_test = [' >> "$PYSCRIPT"
+printf '%s\n' '        ("D-PAD UP", "up"),' >> "$PYSCRIPT"
+printf '%s\n' '        ("D-PAD DOWN", "down"),' >> "$PYSCRIPT"
+printf '%s\n' '        ("A BUTTON (or any face button)", "a"),' >> "$PYSCRIPT"
+printf '%s\n' '        ("START (or any other button)", "start"),' >> "$PYSCRIPT"
+printf '%s\n' '    ]' >> "$PYSCRIPT"
+printf '%s\n' '    mapping = {}' >> "$PYSCRIPT"
+printf '%s\n' '    buttons_detected = 0' >> "$PYSCRIPT"
+printf '%s\n' '    for display_name, key in buttons_to_test:' >> "$PYSCRIPT"
+printf '%s\n' '        result = wait_for_button(dev, ep, baseline, display_name)' >> "$PYSCRIPT"
+printf '%s\n' '        if result:' >> "$PYSCRIPT"
+printf '%s\n' '            mapping[key] = result' >> "$PYSCRIPT"
+printf '%s\n' '            buttons_detected += 1' >> "$PYSCRIPT"
+printf '%s\n' '        time.sleep(0.3)' >> "$PYSCRIPT"
+printf '%s\n' '    print("")' >> "$PYSCRIPT"
+printf '%s\n' '    print("  " + "-" * 50)' >> "$PYSCRIPT"
+printf '%s\n' '    print("")' >> "$PYSCRIPT"
+printf '%s\n' '    if buttons_detected >= 2:' >> "$PYSCRIPT"
+printf '%s\n' '        ok("Controller test PASSED: " + str(buttons_detected) + "/4 buttons detected")' >> "$PYSCRIPT"
+printf '%s\n' '        print("")' >> "$PYSCRIPT"
+printf '%s\n' '        config_dir = "/usr/local/share/grub-snes-gamepad"' >> "$PYSCRIPT"
+printf '%s\n' '        try:' >> "$PYSCRIPT"
+printf '%s\n' '            os.makedirs(config_dir, exist_ok=True)' >> "$PYSCRIPT"
+printf '%s\n' '            config_data = {' >> "$PYSCRIPT"
+printf '%s\n' '                "vid": "0x" + format(dev.idVendor, "04x"),' >> "$PYSCRIPT"
+printf '%s\n' '                "pid": "0x" + format(dev.idProduct, "04x"),' >> "$PYSCRIPT"
+printf '%s\n' '                "name": name,' >> "$PYSCRIPT"
+printf '%s\n' '                "baseline": baseline.hex(),' >> "$PYSCRIPT"
+printf '%s\n' '                "mapping": {}' >> "$PYSCRIPT"
+printf '%s\n' '            }' >> "$PYSCRIPT"
+printf '%s\n' '            for k, v in mapping.items():' >> "$PYSCRIPT"
+printf '%s\n' '                config_data["mapping"][k] = [[i, "0x" + format(a, "02x"), "0x" + format(b, "02x")] for i, a, b in v]' >> "$PYSCRIPT"
+printf '%s\n' '            with open(config_dir + "/controller.json", "w") as f:' >> "$PYSCRIPT"
+printf '%s\n' '                json.dump(config_data, f, indent=2)' >> "$PYSCRIPT"
+printf '%s\n' '            ok("Config saved: " + config_dir + "/controller.json")' >> "$PYSCRIPT"
+printf '%s\n' '        except Exception as e:' >> "$PYSCRIPT"
+printf '%s\n' '            warn("Could not save config: " + str(e))' >> "$PYSCRIPT"
+printf '%s\n' '        print("BUTTONS_DETECTED=" + str(buttons_detected))' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(0)' >> "$PYSCRIPT"
+printf '%s\n' '    else:' >> "$PYSCRIPT"
+printf '%s\n' '        err("Controller test FAILED: Only " + str(buttons_detected) + "/4 buttons detected")' >> "$PYSCRIPT"
+printf '%s\n' '        err("You must successfully detect at least 2 buttons to continue.")' >> "$PYSCRIPT"
+printf '%s\n' '        print("")' >> "$PYSCRIPT"
+printf '%s\n' '        info("Troubleshooting:")' >> "$PYSCRIPT"
+printf '%s\n' '        info("  1. Make sure you are pressing the buttons firmly")' >> "$PYSCRIPT"
+printf '%s\n' '        info("  2. Try a different USB port")' >> "$PYSCRIPT"
+printf '%s\n' '        info("  3. Try unplugging and replugging the controller")' >> "$PYSCRIPT"
+printf '%s\n' '        info("  4. Some controllers may not be compatible")' >> "$PYSCRIPT"
+printf '%s\n' '        print("")' >> "$PYSCRIPT"
+printf '%s\n' '        print("BUTTONS_DETECTED=" + str(buttons_detected))' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(1)' >> "$PYSCRIPT"
+printf '%s\n' '' >> "$PYSCRIPT"
+printf '%s\n' 'if __name__ == "__main__":' >> "$PYSCRIPT"
+printf '%s\n' '    try:' >> "$PYSCRIPT"
+printf '%s\n' '        main()' >> "$PYSCRIPT"
+printf '%s\n' '    except KeyboardInterrupt:' >> "$PYSCRIPT"
+printf '%s\n' '        print("\\n\\nCancelled by user")' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(130)' >> "$PYSCRIPT"
+printf '%s\n' '    except Exception as e:' >> "$PYSCRIPT"
+printf '%s\n' '        print("  \\033[91m[ERROR]\\033[0m Unexpected error: " + str(e))' >> "$PYSCRIPT"
+printf '%s\n' '        import traceback' >> "$PYSCRIPT"
+printf '%s\n' '        traceback.print_exc()' >> "$PYSCRIPT"
+printf '%s\n' '        sys.exit(1)' >> "$PYSCRIPT"
 
 # Run the Python mapper and capture output
 MAPPER_OUTPUT=$(python3 "$PYSCRIPT" 2>&1) || MAPPER_EXIT=$?
@@ -597,12 +463,90 @@ fi
 ok "Controller verified and ready!"
 
 #######################################
+# STEP 4: Install build dependencies
+#######################################
+print_step 4 6 "Installing build dependencies"
+
+echo -e "  ${YELLOW}${BOLD}Your controller is working!${NC}"
+echo ""
+info "Now installing packages needed to compile GRUB..."
+echo ""
+
+# Timeout for apt commands (5 minutes max per command)
+APT_TIMEOUT=300
+
+install_deps_debian() {
+    start_spinner "Updating package lists..."
+    if ! timeout "$APT_TIMEOUT" apt-get update -qq 2>/dev/null; then
+        stop_spinner
+        warn "Package list update timed out or failed, continuing anyway..."
+    else
+        stop_spinner
+        ok "Package lists updated"
+    fi
+
+    # Full list of packages required for GRUB compilation from git source
+    local GRUB_BUILD_DEPS="git build-essential autoconf automake autopoint autogen gettext bison flex"
+    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS python-is-python3"
+    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS libusb-1.0-0-dev pkg-config fonts-unifont libfreetype-dev"
+    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS help2man texinfo liblzma-dev xorriso"
+    # Optional but helpful
+    GRUB_BUILD_DEPS="$GRUB_BUILD_DEPS libopts25 libopts25-dev libdevmapper-dev libfuse-dev"
+
+    start_spinner "Installing build tools (this takes ~2 min)..."
+    # shellcheck disable=SC2086
+    if ! timeout "$APT_TIMEOUT" apt-get install -y -qq $GRUB_BUILD_DEPS 2>/dev/null; then
+        stop_spinner
+        warn "Some optional packages failed, trying essential packages only..."
+        start_spinner "Installing essential packages..."
+        timeout "$APT_TIMEOUT" apt-get install -y -qq git build-essential autoconf automake autopoint \
+            gettext bison flex libusb-1.0-0-dev pkg-config \
+            fonts-unifont help2man texinfo 2>/dev/null || true
+        stop_spinner
+    else
+        stop_spinner
+    fi
+    ok "APT packages installed"
+}
+
+install_deps_fedora() {
+    start_spinner "Installing packages with dnf..."
+    timeout "$APT_TIMEOUT" dnf install -y -q git gcc make autoconf automake autogen gettext bison flex \
+        python3 libusb1-devel texinfo help2man xz-devel \
+        device-mapper-devel 2>/dev/null || true
+    stop_spinner
+    ok "DNF packages installed"
+}
+
+install_deps_arch() {
+    start_spinner "Installing packages with pacman..."
+    timeout "$APT_TIMEOUT" pacman -Sy --noconfirm git base-devel autoconf automake autogen gettext bison \
+        flex python libusb texinfo help2man xz device-mapper 2>/dev/null || true
+    stop_spinner
+    ok "Pacman packages installed"
+}
+
+case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop)
+        install_deps_debian
+        ;;
+    fedora)
+        install_deps_fedora
+        ;;
+    arch|manjaro)
+        install_deps_arch
+        ;;
+    *)
+        warn "Unknown distro '$DISTRO', trying Debian-based install..."
+        install_deps_debian
+        ;;
+esac
+
+#######################################
 # STEP 5: Build GRUB module
 #######################################
 print_step 5 6 "Building GRUB module"
 
-echo -e "  ${YELLOW}${BOLD}Your controller is working!${NC}"
-echo ""
 warn "The next step compiles a custom GRUB module from source."
 warn "This process takes 5-15 minutes and requires ~1GB of disk space."
 echo ""
@@ -653,13 +597,14 @@ info "Running bootstrap (this is the longest step, 3-8 minutes)..."
 info "Bootstrap downloads gnulib from git.savannah.gnu.org"
 echo ""
 
-# Progress indicator for bootstrap
+# Progress indicator for bootstrap (ASCII spinner)
 (
     count=0
+    chars='|/-\'
     while true; do
         count=$((count + 1))
-        dots=$(printf '%*s' $((count % 4)) '' | tr ' ' '.')
-        printf "\r  [*] Bootstrap in progress%-4s (elapsed: %ds)" "$dots" "$count"
+        char_idx=$((count % 4))
+        printf "\r  [%s] Bootstrap in progress... (elapsed: %ds)" "${chars:$char_idx:1}" "$count"
         sleep 1
     done
 ) &
@@ -696,9 +641,11 @@ else
                 # Retry bootstrap with local gnulib
                 (
                     count=0
+                    chars='|/-\'
                     while true; do
                         count=$((count + 1))
-                        printf "\r  [*] Retrying bootstrap with local gnulib... (%ds)" "$count"
+                        char_idx=$((count % 4))
+                        printf "\r  [%s] Retrying bootstrap with local gnulib... (%ds)" "${chars:$char_idx:1}" "$count"
                         sleep 1
                     done
                 ) &
@@ -804,23 +751,15 @@ echo ""
 
 CORES=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 
-# Progress indicator for make
+# Progress indicator for make (ASCII spinner)
 (
     count=0
+    chars='|/-\'
     while true; do
         count=$((count + 1))
-        bar=""
-        pct=$((count % 100))
-        filled=$((pct / 5))
-        for i in $(seq 1 20); do
-            if [ "$i" -le "$filled" ]; then
-                bar="${bar}#"
-            else
-                bar="${bar}-"
-            fi
-        done
-        printf "\r  [%s] Compiling... (%d files processed)" "$bar" "$count"
-        sleep 0.5
+        char_idx=$((count % 4))
+        printf "\r  [%s] Compiling... (%d seconds)" "${chars:$char_idx:1}" "$count"
+        sleep 1
     done
 ) &
 MAKE_PROGRESS_PID=$!
@@ -916,36 +855,36 @@ ok "Cleaned up build files"
 # Create uninstaller script
 mkdir -p /usr/local/share/grub-snes-gamepad
 
-cat > /usr/local/share/grub-snes-gamepad/uninstall.sh << 'ENDUNINSTALL'
-#!/bin/bash
-echo "Uninstalling GRUB SNES Gamepad..."
+# Write uninstaller using printf to avoid heredoc
+UNINSTALL_PATH="/usr/local/share/grub-snes-gamepad/uninstall.sh"
+printf '%s\n' '#!/bin/bash' > "$UNINSTALL_PATH"
+printf '%s\n' 'echo "Uninstalling GRUB SNES Gamepad..."' >> "$UNINSTALL_PATH"
+printf '%s\n' '' >> "$UNINSTALL_PATH"
+printf '%s\n' '# Remove modules' >> "$UNINSTALL_PATH"
+printf '%s\n' 'rm -f /boot/grub/x86_64-efi/usb_gamepad.mod 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' 'rm -f /boot/grub/i386-pc/usb_gamepad.mod 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' 'rm -f /boot/grub2/x86_64-efi/usb_gamepad.mod 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' 'rm -f /boot/grub2/i386-pc/usb_gamepad.mod 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' '' >> "$UNINSTALL_PATH"
+printf '%s\n' '# Restore GRUB config' >> "$UNINSTALL_PATH"
+printf '%s\n' 'if [ -f /etc/grub.d/40_custom.backup-snes ]; then' >> "$UNINSTALL_PATH"
+printf '%s\n' '    cp /etc/grub.d/40_custom.backup-snes /etc/grub.d/40_custom' >> "$UNINSTALL_PATH"
+printf '%s\n' '    echo "Restored GRUB config from backup"' >> "$UNINSTALL_PATH"
+printf '%s\n' 'fi' >> "$UNINSTALL_PATH"
+printf '%s\n' '' >> "$UNINSTALL_PATH"
+printf '%s\n' '# Update GRUB' >> "$UNINSTALL_PATH"
+printf '%s\n' 'if command -v update-grub > /dev/null 2>&1; then' >> "$UNINSTALL_PATH"
+printf '%s\n' '    update-grub 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' 'elif command -v grub2-mkconfig > /dev/null 2>&1; then' >> "$UNINSTALL_PATH"
+printf '%s\n' '    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null' >> "$UNINSTALL_PATH"
+printf '%s\n' 'fi' >> "$UNINSTALL_PATH"
+printf '%s\n' '' >> "$UNINSTALL_PATH"
+printf '%s\n' '# Remove our files' >> "$UNINSTALL_PATH"
+printf '%s\n' 'rm -rf /usr/local/share/grub-snes-gamepad' >> "$UNINSTALL_PATH"
+printf '%s\n' '' >> "$UNINSTALL_PATH"
+printf '%s\n' 'echo "Done! GRUB SNES Gamepad has been uninstalled."' >> "$UNINSTALL_PATH"
 
-# Remove modules
-rm -f /boot/grub/x86_64-efi/usb_gamepad.mod 2>/dev/null
-rm -f /boot/grub/i386-pc/usb_gamepad.mod 2>/dev/null
-rm -f /boot/grub2/x86_64-efi/usb_gamepad.mod 2>/dev/null
-rm -f /boot/grub2/i386-pc/usb_gamepad.mod 2>/dev/null
-
-# Restore GRUB config
-if [ -f /etc/grub.d/40_custom.backup-snes ]; then
-    cp /etc/grub.d/40_custom.backup-snes /etc/grub.d/40_custom
-    echo "Restored GRUB config from backup"
-fi
-
-# Update GRUB
-if command -v update-grub > /dev/null 2>&1; then
-    update-grub 2>/dev/null
-elif command -v grub2-mkconfig > /dev/null 2>&1; then
-    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null
-fi
-
-# Remove our files
-rm -rf /usr/local/share/grub-snes-gamepad
-
-echo "Done! GRUB SNES Gamepad has been uninstalled."
-ENDUNINSTALL
-
-chmod +x /usr/local/share/grub-snes-gamepad/uninstall.sh
+chmod +x "$UNINSTALL_PATH"
 
 #######################################
 # DONE!
