@@ -336,6 +336,10 @@ SELECT_BUTTONS = {
     getattr(ecodes, "BTN_START", None),
     getattr(ecodes, "BTN_SELECT", None),
     getattr(ecodes, "BTN_MODE", None),
+    getattr(ecodes, "BTN_A", None),
+    getattr(ecodes, "BTN_B", None),
+    getattr(ecodes, "BTN_X", None),
+    getattr(ecodes, "BTN_Y", None),
 }
 SELECT_BUTTONS = {c for c in SELECT_BUTTONS if c is not None}
 
@@ -486,6 +490,11 @@ def read_gamepad(dev, axis_info, timeout=0.05):
                     last = 'down'
                 elif event.code in SELECT_BUTTONS:
                     last = 'select'
+                else:
+                    # Fallback: cualquier BTN_* que no sea mouse/teclado -> seleccionar
+                    names = _iter_key_names(event.code)
+                    if any(n.startswith("BTN_") and n not in BTN_EXCLUDE and n not in ("BTN_DPAD_UP", "BTN_DPAD_DOWN") for n in names):
+                        last = 'select'
         return last
     except (OSError, IOError) as e:
         log.error("Gamepad error: %s", e)
