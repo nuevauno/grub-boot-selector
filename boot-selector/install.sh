@@ -4,7 +4,7 @@
 #
 # Selector de SO que corre DESPUÉS de GRUB, dentro de Linux.
 # Se inyecta como ExecStartPre del display manager.
-# Usa openvt para abrir un terminal virtual dedicado.
+# Desactiva Plymouth (boot splash) para tomar control de la pantalla.
 # Usa Python + evdev para leer gamepad USB.
 #
 
@@ -51,7 +51,7 @@ fi
 
 echo -e "${GREEN}[1/5]${NC} Instalando dependencias..."
 apt-get update -qq
-apt-get install -y -qq python3 python3-evdev joystick kbd 2>/dev/null
+apt-get install -y -qq python3 python3-evdev joystick 2>/dev/null
 
 if ! python3 -c "import evdev" 2>/dev/null; then
     echo -e "${YELLOW}python3-evdev no disponible via apt, intentando pip...${NC}"
@@ -64,12 +64,7 @@ if ! python3 -c "import evdev" 2>/dev/null; then
     exit 1
 fi
 
-if ! command -v openvt &>/dev/null; then
-    echo -e "${RED}Error: openvt no encontrado (paquete kbd)${NC}"
-    exit 1
-fi
-
-echo -e "  ${GREEN}✓${NC} python3-evdev + openvt instalados"
+echo -e "  ${GREEN}✓${NC} python3-evdev instalado"
 
 # ── Paso 2: Detectar display manager ─────────────────────────────
 
@@ -104,7 +99,7 @@ echo -e "${GREEN}[3/5]${NC} Creando selector..."
 mkdir -p /opt/boot-selector
 echo "$DM_SERVICE" > /opt/boot-selector/.dm-service
 
-# ── run.sh: wrapper que usa openvt para abrir terminal dedicado ──
+# ── run.sh: wrapper que desactiva Plymouth y muestra el selector ──
 cat > /opt/boot-selector/run.sh << 'RUNEOF'
 #!/bin/bash
 LOGFILE="/var/log/boot-selector.log"
@@ -120,28 +115,34 @@ if [ -f "$FLAG" ]; then
     exit 0
 fi
 
-# Esperar USB
+# Esperar a que los dispositivos USB se enumeren
 log "Waiting 2s for USB..."
 sleep 2
 
-# Usar openvt para abrir el selector en un terminal virtual dedicado
-# -c 6  = usar tty6 (evita conflicto con GDM en tty1)
-# -f    = forzar aunque el VT esté en uso
-# -s    = cambiar a ese VT (para que el usuario lo vea)
-# -w    = esperar a que el programa termine
-log "Opening selector on tty6 via openvt..."
-openvt -c 6 -f -s -w -- /usr/bin/python3 /opt/boot-selector/selector.py 2>> "$LOGFILE"
+# CRITICO: Plymouth (boot splash) controla el framebuffer durante el boot.
+# Si no lo desactivamos, nada se ve en pantalla aunque el script corra.
+if command -v plymouth &>/dev/null; then
+    log "Deactivating Plymouth..."
+    plymouth deactivate 2>/dev/null && log "Plymouth deactivated OK" || log "Plymouth deactivate failed"
+    sleep 0.5
+else
+    log "Plymouth not found (skipping)"
+fi
+
+# Cambiar a tty1 y limpiar la pantalla
+log "Switching to tty1..."
+chvt 1 2>/dev/null && log "chvt 1 OK" || log "chvt 1 failed"
+sleep 0.2
+
+# Ejecutar selector directamente en tty1
+log "Starting selector.py on tty1..."
+/usr/bin/python3 /opt/boot-selector/selector.py < /dev/tty1 > /dev/tty1 2>> "$LOGFILE"
 RESULT=$?
 log "selector.py exited with code $RESULT"
 
 # Marcar como ejecutado
 touch "$FLAG"
 log "Flag created"
-
-# Devolver al VT que usará el display manager
-sleep 0.3
-chvt 1 2>/dev/null || chvt 2 2>/dev/null || chvt 7 2>/dev/null || true
-log "Switched back to DM tty"
 
 log "run.sh finished"
 exit 0
@@ -506,7 +507,7 @@ echo -e "${GREEN}${BOLD}║        INSTALACION COMPLETA            ║${NC}"
 echo -e "${GREEN}${BOLD}╚════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${BOLD}Cómo funciona:${NC}"
-echo "    Se ejecuta ANTES de ${DM_SERVICE} usando openvt en tty6"
+echo "    Desactiva Plymouth, muestra menu en tty1, ANTES de ${DM_SERVICE}"
 echo ""
 echo -e "  ${CYAN}PROBAR:${NC}  sudo /opt/boot-selector/test.sh"
 echo -e "  ${CYAN}LOG:${NC}     cat /var/log/boot-selector.log"
