@@ -337,6 +337,19 @@ SELECT_BUTTONS = {
 }
 SELECT_BUTTONS = {c for c in SELECT_BUTTONS if c is not None}
 
+BTN_EXCLUDE = {
+    "BTN_LEFT", "BTN_RIGHT", "BTN_MIDDLE", "BTN_SIDE", "BTN_EXTRA",
+    "BTN_FORWARD", "BTN_BACK", "BTN_TASK", "BTN_TOUCH", "BTN_TOOL_PEN",
+    "BTN_TOOL_FINGER", "BTN_TOOL_RUBBER", "BTN_TOOL_BRUSH", "BTN_TOOL_PENCIL",
+    "BTN_TOOL_MOUSE", "BTN_STYLUS", "BTN_STYLUS2",
+}
+
+def _key_name(code):
+    try:
+        return ecodes.bytype[ecodes.EV_KEY].get(code, "")
+    except Exception:
+        return ""
+
 def find_gamepad():
     if not HAS_EVDEV:
         return None
@@ -369,6 +382,9 @@ def find_gamepad():
                     score += 5
                 if DPAD_UP in key_codes or DPAD_DOWN in key_codes:
                     score += 2
+                key_names = [_key_name(c) for c in key_codes]
+                if any(n.startswith("BTN_") and n not in BTN_EXCLUDE for n in key_names):
+                    score += 3
 
             axis_info = {}
             if abs_codes:
