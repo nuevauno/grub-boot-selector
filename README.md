@@ -39,6 +39,17 @@ sudo /opt/boot-selector/uninstall.sh
 cat /var/log/boot-selector.log
 ```
 
+## Troubleshooting
+
+Si el test no funciona o no detecta el gamepad, copia y pega esto:
+
+```bash
+sudo /opt/boot-selector/test.sh 2>&1 | tee /tmp/boot-test.log
+tail -n 200 /var/log/boot-selector.log
+tail -n 200 /var/log/boot-selector-install.log
+head -n 15 /opt/boot-selector/selector.py
+```
+
 ## Desarrollo
 
 El instalador principal vive en `boot-selector/install.sh`.
