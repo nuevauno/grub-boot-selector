@@ -269,6 +269,22 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # --- Gamepad ---
 
+def _uevent_props(devpath):
+    # devpath: /dev/input/eventX -> /sys/class/input/eventX/device/uevent
+    try:
+        base = os.path.basename(devpath)
+        uevent = f"/sys/class/input/{base}/device/uevent"
+        props = {}
+        with open(uevent, "r") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    props[k] = v.strip()
+        return props
+    except Exception:
+        return {}
+
 GAMEPAD_NAME_HINTS = (
     "gamepad", "controller", "joystick", "xbox", "xinput", "dualshock",
     "dualsense", "ps4", "ps5", "playstation", "nintendo", "switch", "pro",
@@ -331,6 +347,11 @@ def find_gamepad():
             dev = evdev.InputDevice(path)
             caps = dev.capabilities(verbose=False)
             score = 0
+            props = _uevent_props(path)
+            if props.get("ID_INPUT_GAMEPAD") == "1" or props.get("ID_INPUT_JOYSTICK") == "1":
+                score += 10
+            if props.get("ID_BUS") in ("usb", "bluetooth"):
+                score += 1
             name = (dev.name or "").lower()
             if any(h in name for h in GAMEPAD_NAME_HINTS):
                 score += 5
@@ -356,7 +377,7 @@ def find_gamepad():
                         axis_info[code] = {'min': info.min, 'max': info.max}
 
             if score > 0:
-                log.info("Candidate: %s (%s) score=%d abs=%s", dev.name, dev.path, score, abs_codes)
+                log.info("Candidate: %s (%s) score=%d abs=%s props=%s", dev.name, dev.path, score, abs_codes, props)
                 if score > best_score:
                     best = (dev, axis_info)
                     best_score = score
