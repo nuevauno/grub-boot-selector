@@ -120,19 +120,35 @@ log "Waiting 2s for USB..."
 sleep 2
 
 # CRITICO: Plymouth (boot splash) controla el framebuffer durante el boot.
-# Si no lo desactivamos, nada se ve en pantalla aunque el script corra.
+# Hay que PARARLO completamente (quit, no solo deactivate).
 if command -v plymouth &>/dev/null; then
-    log "Deactivating Plymouth..."
-    plymouth deactivate 2>/dev/null && log "Plymouth deactivated OK" || log "Plymouth deactivate failed"
+    log "Stopping Plymouth..."
+    plymouth quit 2>/dev/null && log "Plymouth quit OK" || log "Plymouth quit failed (may not be running)"
     sleep 0.5
 else
     log "Plymouth not found (skipping)"
 fi
 
-# Cambiar a tty1 y limpiar la pantalla
+# CRITICO: Aunque Plymouth pare, el VT queda en modo KD_GRAPHICS.
+# En ese modo el texto se escribe al buffer pero NO se renderiza en pantalla.
+# Hay que forzar KD_TEXT (0x00) via ioctl KDSETMODE (0x4B3A).
+log "Forcing tty1 to text mode (KD_TEXT)..."
+/usr/bin/python3 -c "
+import fcntl, os
+fd = os.open('/dev/tty1', os.O_WRONLY)
+try:
+    fcntl.ioctl(fd, 0x4B3A, 0)  # KDSETMODE=0x4B3A, KD_TEXT=0x00
+finally:
+    os.close(fd)
+" 2>/dev/null && log "tty1 KD_TEXT OK" || log "tty1 KD_TEXT failed"
+
+# Cambiar a tty1
 log "Switching to tty1..."
 chvt 1 2>/dev/null && log "chvt 1 OK" || log "chvt 1 failed"
-sleep 0.2
+sleep 0.3
+
+# Limpiar pantalla
+printf '\033[2J\033[H' > /dev/tty1 2>/dev/null
 
 # Ejecutar selector directamente en tty1
 log "Starting selector.py on tty1..."
