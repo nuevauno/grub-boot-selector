@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Gamepad Boot Selector
+# GRUB Boot Selector
 #
 # Selector de SO que corre DESPUÉS de GRUB, dentro de Linux.
 # Se inyecta como ExecStartPre del display manager.
