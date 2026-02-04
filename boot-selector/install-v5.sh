@@ -477,6 +477,17 @@ def main():
         log.info("Continuando boot normal (Ubuntu)")
 
     time.sleep(1)
+
+    # Devolver al VT del display manager (normalmente tty7 o tty2)
+    if not TEST_MODE:
+        for vt in [7, 2, 1]:
+            try:
+                subprocess.run(["chvt", str(vt)], check=True, timeout=5)
+                log.info("Cambio a tty%d", vt)
+                break
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                continue
+
     log.info("Selector finalizado")
 
 if __name__ == "__main__":
@@ -503,28 +514,41 @@ cat > /etc/systemd/system/boot-selector.service << 'SVCEOF'
 [Unit]
 Description=Gamepad Boot OS Selector
 After=systemd-udevd.service systemd-tmpfiles-setup.service
-Before=display-manager.service gdm.service lightdm.service sddm.service
+Before=display-manager.service
+Conflicts=getty@tty1.service
 Wants=systemd-udevd.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/bin/chvt 1
 ExecStart=/usr/bin/python3 /opt/boot-selector/selector.py
-StandardInput=tty
-StandardOutput=tty
+StandardInput=tty-force
+StandardOutput=tty-force
+StandardError=journal
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
+TTYVTDisallocate=no
 TimeoutStartSec=30
 ConditionPathExists=!/run/boot-selector-done
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 SVCEOF
+
+# Drop-in para que el display manager SIEMPRE espere al selector
+mkdir -p /etc/systemd/system/display-manager.service.d
+cat > /etc/systemd/system/display-manager.service.d/wait-boot-selector.conf << 'DROPEOF'
+[Unit]
+After=boot-selector.service
+Wants=boot-selector.service
+DROPEOF
 
 systemctl daemon-reload
 systemctl enable boot-selector.service
 echo -e "  ${GREEN}✓${NC} Servicio habilitado"
+echo -e "  ${GREEN}✓${NC} Display manager configurado para esperar al selector"
 
 # ── Paso 4: GRUB ──────────────────────────────────────────────────
 
@@ -558,6 +582,8 @@ cat > /opt/boot-selector/uninstall.sh << 'UNINSTEOF'
 echo "Desinstalando Boot Selector..."
 systemctl disable boot-selector.service 2>/dev/null
 rm -f /etc/systemd/system/boot-selector.service
+rm -rf /etc/systemd/system/display-manager.service.d/wait-boot-selector.conf
+rmdir /etc/systemd/system/display-manager.service.d 2>/dev/null || true
 rm -f /run/boot-selector-done
 rm -rf /opt/boot-selector
 cp /etc/default/grub.bak-selector /etc/default/grub 2>/dev/null
