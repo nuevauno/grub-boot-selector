@@ -269,28 +269,103 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # --- Gamepad ---
 
+GAMEPAD_NAME_HINTS = (
+    "gamepad", "controller", "joystick", "xbox", "xinput", "dualshock",
+    "dualsense", "ps4", "ps5", "playstation", "nintendo", "switch", "pro",
+    "8bitdo", "snes", "genesis", "retro", "stadia", "logitech"
+)
+
+ABS_GAMEPAD_AXES = {
+    # Sticks / triggers / dpad hat
+    getattr(ecodes, "ABS_X", None),
+    getattr(ecodes, "ABS_Y", None),
+    getattr(ecodes, "ABS_RX", None),
+    getattr(ecodes, "ABS_RY", None),
+    getattr(ecodes, "ABS_Z", None),
+    getattr(ecodes, "ABS_RZ", None),
+    getattr(ecodes, "ABS_HAT0X", None),
+    getattr(ecodes, "ABS_HAT0Y", None),
+}
+ABS_GAMEPAD_AXES = {c for c in ABS_GAMEPAD_AXES if c is not None}
+
+GAMEPAD_BUTTONS = {
+    getattr(ecodes, "BTN_GAMEPAD", None),
+    getattr(ecodes, "BTN_JOYSTICK", None),
+    getattr(ecodes, "BTN_SOUTH", None),
+    getattr(ecodes, "BTN_EAST", None),
+    getattr(ecodes, "BTN_NORTH", None),
+    getattr(ecodes, "BTN_WEST", None),
+    getattr(ecodes, "BTN_TL", None),
+    getattr(ecodes, "BTN_TR", None),
+    getattr(ecodes, "BTN_TL2", None),
+    getattr(ecodes, "BTN_TR2", None),
+    getattr(ecodes, "BTN_SELECT", None),
+    getattr(ecodes, "BTN_START", None),
+    getattr(ecodes, "BTN_MODE", None),
+    getattr(ecodes, "BTN_THUMBL", None),
+    getattr(ecodes, "BTN_THUMBR", None),
+    getattr(ecodes, "BTN_TRIGGER", None),
+    getattr(ecodes, "BTN_THUMB", None),
+}
+GAMEPAD_BUTTONS = {c for c in GAMEPAD_BUTTONS if c is not None}
+
+DPAD_UP = getattr(ecodes, "BTN_DPAD_UP", None)
+DPAD_DOWN = getattr(ecodes, "BTN_DPAD_DOWN", None)
+
+SELECT_BUTTONS = {
+    getattr(ecodes, "BTN_SOUTH", None),
+    getattr(ecodes, "BTN_EAST", None),
+    getattr(ecodes, "BTN_START", None),
+    getattr(ecodes, "BTN_SELECT", None),
+    getattr(ecodes, "BTN_MODE", None),
+}
+SELECT_BUTTONS = {c for c in SELECT_BUTTONS if c is not None}
+
 def find_gamepad():
     if not HAS_EVDEV:
         return None
+    best = None
+    best_score = -1
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
             caps = dev.capabilities(verbose=False)
-            if ecodes.EV_ABS not in caps:
-                continue
-            abs_codes = [c for c, _ in caps[ecodes.EV_ABS]]
-            has_xy = ecodes.ABS_X in abs_codes and ecodes.ABS_Y in abs_codes
-            has_hat = ecodes.ABS_HAT0X in abs_codes and ecodes.ABS_HAT0Y in abs_codes
-            if has_xy or has_hat:
-                axis_info = {}
+            score = 0
+            name = (dev.name or "").lower()
+            if any(h in name for h in GAMEPAD_NAME_HINTS):
+                score += 5
+
+            abs_codes = []
+            if ecodes.EV_ABS in caps:
+                abs_codes = [c for c, _ in caps[ecodes.EV_ABS]]
+                if any(c in ABS_GAMEPAD_AXES for c in abs_codes):
+                    score += 3
+
+            key_codes = []
+            if ecodes.EV_KEY in caps:
+                key_codes = [c for c in caps[ecodes.EV_KEY]]
+                if any(c in GAMEPAD_BUTTONS for c in key_codes):
+                    score += 5
+                if DPAD_UP in key_codes or DPAD_DOWN in key_codes:
+                    score += 2
+
+            axis_info = {}
+            if abs_codes:
                 for code, info in caps[ecodes.EV_ABS]:
-                    if code in (ecodes.ABS_X, ecodes.ABS_Y,
-                                ecodes.ABS_HAT0X, ecodes.ABS_HAT0Y):
+                    if code in ABS_GAMEPAD_AXES:
                         axis_info[code] = {'min': info.min, 'max': info.max}
-                log.info("Gamepad: %s (%s) axes=%s", dev.name, dev.path, axis_info)
-                return dev, axis_info
+
+            if score > 0:
+                log.info("Candidate: %s (%s) score=%d abs=%s", dev.name, dev.path, score, abs_codes)
+                if score > best_score:
+                    best = (dev, axis_info)
+                    best_score = score
         except (PermissionError, OSError) as e:
             log.debug("Skip %s: %s", path, e)
+    if best:
+        dev, axis_info = best
+        log.info("Gamepad selected: %s (%s) score=%d axes=%s", dev.name, dev.path, best_score, axis_info)
+        return dev, axis_info
     log.warning("No gamepad found")
     return None
 
@@ -304,21 +379,25 @@ def read_gamepad(dev, axis_info, timeout=0.05):
         last = None
         for event in dev.read():
             if event.type == ecodes.EV_ABS:
-                if event.code == ecodes.ABS_Y:
-                    info = axis_info.get(ecodes.ABS_Y, {'min': 0, 'max': 255})
+                if event.code in (getattr(ecodes, "ABS_Y", -1), getattr(ecodes, "ABS_RY", -2)):
+                    info = axis_info.get(event.code, {'min': 0, 'max': 255})
                     center = (info['min'] + info['max']) // 2
                     thresh = (info['max'] - info['min']) // 4
                     if event.value < center - thresh:
                         last = 'up'
                     elif event.value > center + thresh:
                         last = 'down'
-                elif event.code == ecodes.ABS_HAT0Y:
+                elif event.code == getattr(ecodes, "ABS_HAT0Y", -1):
                     if event.value < 0:
                         last = 'up'
                     elif event.value > 0:
                         last = 'down'
             elif event.type == ecodes.EV_KEY and event.value == 1:
-                if event.code in {304, 315, 288, 289, 297}:
+                if event.code == DPAD_UP:
+                    last = 'up'
+                elif event.code == DPAD_DOWN:
+                    last = 'down'
+                elif event.code in SELECT_BUTTONS:
                     last = 'select'
         return last
     except (OSError, IOError) as e:
